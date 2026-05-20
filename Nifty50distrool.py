@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import requests
-import urllib.parse
 import plotly.graph_objects as go
 from scipy.stats import norm
 
@@ -102,34 +101,33 @@ days_to_target = dte_mapping[time_horizon]
 # --- LIVE MARKET DATA ENGINE ---
 def fetch_upstox_live_data(token, instrument_key):
     """
-    Queries Upstox v2 Market Quote Endpoint for the chosen asset key
-    and safely parses active prices and volatility metrics.
+    Queries Upstox v2 Market Quote Endpoint using safe dictionary routing params.
     """
-    # URL-encode the instrument key to turn '|' into '%7C'
-    encoded_key = urllib.parse.quote(instrument_key)
-    url = f"https://api.upstox.com/v2/market-quote/quotes?instrument_key={encoded_key}"
+    url = "https://api.upstox.com/v2/market-quote/quotes"
+    
+    params = {
+        'instrument_key': instrument_key
+    }
     
     headers = {
         'Accept': 'application/json',
         'Authorization': f'Bearer {token}'
     }
     
-    response = requests.get(url, headers=headers)
+    response = requests.get(url, headers=headers, params=params)
     
     if response.status_code == 200:
         json_data = response.json()
-        response_key = instrument_key.replace("|", ":")
+        response_key = instrument_key.replace("|", ":").upper()
         
-        if 'data' in json_data:
+        if 'data' in json_data and json_data['data']:
             data_payload = {k.upper(): v for k, v in json_data['data'].items()}
-            search_target = response_key.upper()
             
-            if search_target in data_payload:
-                instrument_data = data_payload[search_target]
+            if response_key in data_payload:
+                instrument_data = data_payload[response_key]
                 spot = float(instrument_data['last_price'])
                 
-                # Dynamic asset baseline volatility shifts
-                base_iv = 0.24 if "EQ" in search_target else 0.155
+                base_iv = 0.24 if "EQ" in response_key else 0.155
                 iv = float(instrument_data.get('oi_interest', base_iv))
                 
                 if iv <= 0 or iv > 1.5:  
@@ -138,9 +136,9 @@ def fetch_upstox_live_data(token, instrument_key):
                 return spot, iv, f"Upstox Live Feed ({response_key})"
             else:
                 available_keys = list(json_data['data'].keys())
-                raise KeyError(f"Target '{response_key}' missing. API returned keys: {available_keys}")
+                raise KeyError(f"Target key '{response_key}' missing. API keys returned: {available_keys}")
         else:
-            raise KeyError("Malformed API response structure: 'data' property missing.")
+            raise KeyError(f"API data container dropped query for: {instrument_key}. Verify token permissions.")
     else:
         raise Exception(f"HTTP {response.status_code}: {response.text}")
 
@@ -213,4 +211,3 @@ st.markdown("### 📋 Investor Insight Summary")
 st.info(f"""
 *   📊 **Probability Target Ranges:** Based on current calculations, there is a **68.2% mathematical probability** that **{selected_asset_name}** will trade within the range of **₹{lower_1sig:,.2f}** and **₹{upper_1sig:,.2f}** over the next {time_horizon}.
 """)
-    
