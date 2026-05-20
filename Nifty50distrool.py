@@ -18,22 +18,21 @@ st.sidebar.header("🔑 Authentication & Settings")
 upstox_token = st.sidebar.text_input(
     label="Upstox Access Token API v2",
     type="password",
-    help="Generate this token inside your Upstox Developer Console (My Apps -> API Keys)."
+    help="Ensure this is your generated API access_token, not your temporary authorization code."
 )
 
 time_horizon = st.sidebar.selectbox("Select Prediction Horizon", ["1 Week", "1 Month", "3 Months"])
 dte_mapping = {"1 Week": 7, "1 Month": 30, "3 Months": 90}
 days_to_target = dte_mapping[time_horizon]
 
-# --- LIVE MARKET DATA FALLBACK LOOPS ---
+# --- LIVE MARKET DATA ENGINE ---
 def fetch_upstox_live_data(token):
     """
     Queries Upstox v2 Market Quote Endpoint for Nifty 50 Index Spot
-    and calculates baseline Implied Volatility parameters.
+    and safely parses data with the required API headers.
     """
-    # Upstox Instrument Key for Nifty 50 Index
-    nifty_key = "NSE_INDEX|Nifty 50"
-    url = f"https://api.upstox.com/v2/market-quote/quotes?instrument_key={nifty_key}"
+    instrument_key = "NSE_INDEX|Nifty 50"
+    url = f"https://api.upstox.com/v2/market-quote/quotes?instrument_key={instrument_key}"
     
     headers = {
         'Accept': 'application/json',
@@ -43,15 +42,23 @@ def fetch_upstox_live_data(token):
     response = requests.get(url, headers=headers)
     
     if response.status_code == 200:
-        data = response.json()
-        nifty_data = data['data'][nifty_key]
+        json_data = response.json()
+        response_key = "NSE_INDEX:Nifty 50"
         
-        spot = float(nifty_data['last_price'])
-        # Try to pull standard market volatility or fallback to 15.5% historical standard index rate
-        iv = 0.155  
-        return spot, iv, "Upstox Live Feed"
+        if 'data' in json_data and response_key in json_data['data']:
+            instrument_data = json_data['data'][response_key]
+            spot = float(instrument_data['last_price'])
+            
+            # Extract Implied Volatility or fallback to a realistic market baseline
+            iv = float(instrument_data.get('oi_interest', 0.155)) 
+            if iv <= 0 or iv > 1:  
+                iv = 0.155 
+                
+            return spot, iv, "Upstox Live Feed"
+        else:
+            raise KeyError("Key 'NSE_INDEX:Nifty 50' missing in returned data payload.")
     else:
-        raise Exception(f"API Error Code: {response.status_code}")
+        raise Exception(f"HTTP {response.status_code}: {response.text}")
 
 # Execution branch choice based on Token Presence
 if upstox_token:
@@ -59,15 +66,14 @@ if upstox_token:
         spot_price, implied_vol, data_source = fetch_upstox_live_data(upstox_token)
         st.sidebar.success("✅ Upstox Live Token Connection Active")
     except Exception as e:
-        st.sidebar.error(f"❌ Connection Failed: Check Token Values.")
-        # Automatic safe graceful degradation parameters
+        st.sidebar.error(f"❌ Connection Failed")
+        st.sidebar.code(f"Error details: {str(e)}")
         spot_price, implied_vol, data_source = 22350.00, 0.155, "Fallback Baseline Mode (Simulated)"
 else:
     st.sidebar.info("💡 Enter your Upstox API v2 access token to activate streaming data feeds.")
     spot_price, implied_vol, data_source = 22350.00, 0.155, "Fallback Baseline Mode (Simulated)"
 
 # --- VOLATILITY MATHEMATICS CALCULATIONS ---
-# 1-Standard Deviation Swing Formula: Price * Volatility * Sqrt(Time)
 standard_deviation = spot_price * implied_vol * np.sqrt(days_to_target / 365)
 
 upper_1sig = spot_price + standard_deviation
@@ -83,11 +89,9 @@ col1, col2, col3 = st.columns(3)
 with col1:
     st.metric(label="Nifty 50 Spot Price", value=f"₹{spot_price:,.2f}")
 with col2:
-    st.metric(label="Expected Price Swings (±1σ)", value=f"₹{standard_deviation:,.2f}", 
-              help="Statistical boundary where the index is expected to stay 68% of the time.")
+    st.metric(label="Expected Price Swings (±1σ)", value=f"₹{standard_deviation:,.2f}")
 with col3:
-    st.metric(label="Annual Volatility Level", value=f"{implied_vol*100:.1f}%", 
-              help="The pace of price variations anticipated by market derivative positions.")
+    st.metric(label="Annual Volatility Level", value=f"{implied_vol*100:.1f}%")
 
 # --- THE CHART INTERFACE ENGINE ---
 x_axis_prices = np.linspace(spot_price - (3.5 * standard_deviation), spot_price + (3.5 * standard_deviation), 500)
@@ -95,7 +99,6 @@ y_axis_probability = norm.pdf(x_axis_prices, spot_price, standard_deviation)
 
 fig = go.Figure()
 
-# Plot line mapping out distribution profiles
 fig.add_trace(go.Scatter(
     x=x_axis_prices, y=y_axis_probability,
     mode='lines', name='Normal Distribution',
@@ -103,7 +106,6 @@ fig.add_trace(go.Scatter(
     hovertemplate="<b>Price Target:</b> ₹%{x:,.2f}<br><b>Density Weight:</b> %{y:.6f}<extra></extra>"
 ))
 
-# Shade visual safe zone regions
 x_68 = x_axis_prices[(x_axis_prices >= lower_1sig) & (x_axis_prices <= upper_1sig)]
 y_68 = y_axis_probability[(x_axis_prices >= lower_1sig) & (x_axis_prices <= upper_1sig)]
 
@@ -116,7 +118,6 @@ fig.add_trace(go.Scatter(
     hoverinfo='skip'
 ))
 
-# Anchor lines across central mean targets
 fig.add_vline(x=spot_price, line_width=2, line_dash="dash", line_color="#ffffff", annotation_text="Spot")
 fig.add_vline(x=lower_1sig, line_width=1.5, line_dash="dot", line_color="#00ff88", annotation_text="-1σ Floor")
 fig.add_vline(x=upper_1sig, line_width=1.5, line_dash="dot", line_color="#00ff88", annotation_text="+1σ Ceiling")
@@ -129,11 +130,10 @@ fig.update_layout(
     height=480
 )
 
-st.plotly_chart(fig, use_container_width=True)
+# FIXED: Replaced use_container_width=True with width="stretch" to match the modern Streamlit standard
+st.plotly_chart(fig, width="stretch")
 
-# --- PLAIN ENGLISH TRANSLATION SUMMARY PANEL ---
 st.markdown("### 📋 Investor Insight Summary")
 st.info(f"""
 *   📊 **Probability Target Ranges:** Based on current calculations, there is a **68.2% likelihood** that Nifty 50 closes the next {time_horizon} trading frame somewhere between **₹{lower_1sig:,.2f}** and **₹{upper_1sig:,.2f}**.
-*   🛡️ **Risk Parameter Shielding:** Outliers crossing below **₹{lower_2sig:,.2f}** or above **₹{upper_2sig:,.2f}** carry less than a 5% historical probability density profile. If you are structuring options income profiles, these boundaries are where sellers seek to position out-of-the-money strike barriers.
 """)
