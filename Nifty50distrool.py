@@ -10,7 +10,7 @@ from scipy.stats import norm
 st.set_page_config(page_title="Multi-Asset Probability Dashboard", layout="wide")
 
 st.title("📊 Multi-Asset Probability & Price Prediction Tool")
-st.markdown("Select a hardcoded Nifty stock or search any BSE asset to run automated mathematical volatility modeling.")
+st.markdown("Select an asset across Nifty or BSE universes to run live mathematical volatility modeling.")
 
 # --- SIDEBAR PANEL SETUP ---
 st.sidebar.header("🔑 Authentication & Settings")
@@ -25,121 +25,7 @@ upstox_token = st.sidebar.text_input(
 st.sidebar.markdown("---")
 st.sidebar.header("📈 Asset Selection")
 
-# Dropdown 1: Select between Index, Hardcoded NSE Stocks, or Live BSE Search
-asset_type = st.sidebar.selectbox("Select Asset Type", ["Indices", "NSE Stocks (Nifty 50)", "BSE Stocks (Live Search)"])
-
-# Initialize dynamic tracking variables
-target_instrument_key = None
-selected_asset_name = ""
-
-# --- SEGMENT 1: INDICES (HARDCODED) ---
-if asset_type == "Indices":
-    asset_options = {
-        "Nifty 50": "NSE_INDEX|Nifty 50",
-        "Nifty Bank": "NSE_INDEX|Nifty Bank",
-        "BSE Sensex": "BSE_INDEX|SENSEX"
-    }
-    selected_asset_name = st.sidebar.selectbox("Choose Specific Index", list(asset_options.keys()))
-    target_instrument_key = asset_options[selected_asset_name]
-
-# --- SEGMENT 2: NSE STOCKS (COMPLETE NIFTY 50 HARDCODED) ---
-elif asset_type == "NSE Stocks (Nifty 50)":
-    asset_options = {
-        "Adani Enterprises (ADANIENT)": "NSE_EQ|ADANIENT",
-        "Adani Ports (ADANIPORTS)": "NSE_EQ|ADANIPORTS",
-        "Apollo Hospitals (APOLLOHOSP)": "NSE_EQ|APOLLOHOSP",
-        "Asian Paints (ASIANPAINT)": "NSE_EQ|ASIANPAINT",
-        "Axis Bank (AXISBANK)": "NSE_EQ|AXISBANK",
-        "Bajaj Auto (BAJAJ-AUTO)": "NSE_EQ|BAJAJ-AUTO",
-        "Bajaj Finance (BAJFINANCE)": "NSE_EQ|BAJFINANCE",
-        "Bajaj Finserv (BAJAJFINSV)": "NSE_EQ|BAJAJFINSV",
-        "Bharat Electronics (BEL)": "NSE_EQ|BEL",
-        "Bharat Petroleum (BPCL)": "NSE_EQ|BPCL",
-        "Bharti Airtel (BHARTIARTL)": "NSE_EQ|BHARTIARTL",
-        "Britannia Industries (BRITANNIA)": "NSE_EQ|BRITANNIA",
-        "Cipla (CIPLA)": "NSE_EQ|CIPLA",
-        "Coal India (COALINDIA)": "NSE_EQ|COALINDIA",
-        "Divi's Laboratories (DIVISLAB)": "NSE_EQ|DIVISLAB",
-        "Dr. Reddy's Laboratories (DRREDDY)": "NSE_EQ|DRREDDY",
-        "Eicher Motors (EICHERMOT)": "NSE_EQ|EICHERMOT",
-        "Grasim Industries (GRASIM)": "NSE_EQ|GRASIM",
-        "HCL Technologies (HCLTECH)": "NSE_EQ|HCLTECH",
-        "HDFC Bank (HDFCBANK)": "NSE_EQ|HDFCBANK",
-        "Hero MotoCorp (HEROMOTOCO)": "NSE_EQ|HEROMOTOCO",
-        "Hindalco Industries (HINDALCO)": "NSE_EQ|HINDALCO",
-        "Hindustan Unilever (HINDUNILVR)": "NSE_EQ|HINDUNILVR",
-        "ICICI Bank (ICICIBANK)": "NSE_EQ|ICICIBANK",
-        "Infosys (INFY)": "NSE_EQ|INFY",
-        "ITC Limited (ITC)": "NSE_EQ|ITC",
-        "JSW Steel (JSWSTEEL)": "NSE_EQ|JSWSTEEL",
-        "Kotak Mahindra Bank (KOTAKBANK)": "NSE_EQ|KOTAKBANK",
-        "Larsen & Toubro (LT)": "NSE_EQ|LT",
-        "LIC of India (LICI)": "NSE_EQ|LICI",
-        "LTIMindtree (LTIM)": "NSE_EQ|LTIM",
-        "Mahindra & Mahindra (M&M)": "NSE_EQ|M&M",
-        "Maruti Suzuki (MARUTI)": "NSE_EQ|MARUTI",
-        "Nestle India (NESTLEIND)": "NSE_EQ|NESTLEIND",
-        "NTPC Limited (NTPC)": "NSE_EQ|NTPC",
-        "ONGC (ONGC)": "NSE_EQ|ONGC",
-        "Power Grid Corporation (POWERGRID)": "NSE_EQ|POWERGRID",
-        "Reliance Industries (RELIANCE)": "NSE_EQ|RELIANCE",
-        "SBI Life Insurance (SBILIFE)": "NSE_EQ|SBILIFE",
-        "State Bank of India (SBIN)": "NSE_EQ|SBIN",
-        "Shriram Finance (SHRIRAMFIN)": "NSE_EQ|SHRIRAMFIN",
-        "Sun Pharmaceutical (SUNPHARMA)": "NSE_EQ|SUNPHARMA",
-        "Tata Consultancy Services (TCS)": "NSE_EQ|TCS",
-        "Tata Motors (TATAMOTORS)": "NSE_EQ|TATAMOTORS",
-        "Tata Steel (TATASTEEL)": "NSE_EQ|TATASTEEL",
-        "Tech Mahindra (TECHM)": "NSE_EQ|TECHM",
-        "Titan Company (TITAN)": "NSE_EQ|TITAN",
-        "Trent Limited (TRENT)": "NSE_EQ|TRENT",
-        "UltraTech Cement (ULTRACEMCO)": "NSE_EQ|ULTRACEMCO",
-        "Wipro (WIPRO)": "NSE_EQ|WIPRO"
-    }
-    selected_asset_name = st.sidebar.selectbox("Choose Specific NSE Stock", list(asset_options.keys()))
-    target_instrument_key = asset_options[selected_asset_name]
-
-# --- SEGMENT 3: BSE STOCKS (LIVE KEYWORD SEARCH VIA API) ---
-else:
-    bse_search = st.sidebar.text_input("Type Stock Name / Ticker for BSE", value="Reliance")
-    
-    if upstox_token and bse_search:
-        try:
-            # Query the Upstox active database master lookup endpoint
-            search_url = f"https://api.upstox.com/v2/instruments/search?keyword={bse_search}"
-            search_headers = {'Accept': 'application/json', 'Authorization': f'Bearer {upstox_token}'}
-            search_res = requests.get(search_url, headers=search_headers)
-            
-            if search_res.status_code == 200:
-                search_data = search_res.json().get('data', [])
-                # Filter down results belonging explicitly to the BSE Cash equity segment
-                bse_results = [item for item in search_data if item.get('instrument_type') == 'EQUITY' and item.get('exchange') == 'BSE']
-                
-                if bse_results:
-                    # Create dictionary mapping unique description names to their true dynamic key strings
-                    bse_map = {f"{item['name']} ({item['trading_symbol']})": item['instrument_key'] for item in bse_results[:15]}
-                    selected_asset_name = st.sidebar.selectbox("Matching BSE Results Found", list(bse_map.keys()))
-                    target_instrument_key = bse_map[selected_asset_name]
-                else:
-                    st.sidebar.warning("⚠️ No matching BSE equity tokens found. Using fallback.")
-            else:
-                st.sidebar.error("Error connecting to Upstox Master Lookup.")
-        except Exception as e:
-            st.sidebar.error(f"Search API Error: {str(e)}")
-            
-# --- SIDEBAR PANEL SETUP ---
-st.sidebar.header("🔑 Authentication & Settings")
-
-upstox_token = st.sidebar.text_input(
-    label="Upstox Access Token API v2",
-    type="password",
-    help="Ensure this is your generated API access_token, not your temporary authorization code."
-)
-
-st.sidebar.markdown("---")
-st.sidebar.header("📈 Asset Selection")
-
-# Expanded dropdown selections to leverage your arrays
+# Dropdown menu containing your custom structured index catalogs
 asset_type = st.sidebar.selectbox(
     "Select Universe", 
     ["Indices", "Nifty 50 Universe", "Nifty 500 Universe", "BSE 500 Universe", "BSE Stocks (Live Search)"]
@@ -208,6 +94,10 @@ else:
         selected_asset_name = "RELIANCE (NSE Falling Back)"
         target_instrument_key = "NSE_EQ|RELIANCE"
 
+# Horizon mapping configuration parameter
+time_horizon = st.sidebar.selectbox("Select Prediction Horizon", ["1 Week", "1 Month", "3 Months", "1 Year"])
+dte_mapping = {"1 Week": 7, "1 Month": 30, "3 Months": 90, "1 Year": 365}
+days_to_target = dte_mapping[time_horizon]
 
 # --- LIVE MARKET DATA ENGINE ---
 def fetch_upstox_live_data(token, instrument_key):
@@ -316,11 +206,11 @@ fig.update_layout(
     template="plotly_dark", showlegend=False, height=480
 )
 
-# Render with the modern width standard mapping configuration
 st.plotly_chart(fig, width="stretch")
 
-# --- PLAIN ENGLISH TRANSLATION SUMMARY PANEL ---
+# --- TRANSLATION SUMMARY PANEL ---
 st.markdown("### 📋 Investor Insight Summary")
 st.info(f"""
 *   📊 **Probability Target Ranges:** Based on current calculations, there is a **68.2% mathematical probability** that **{selected_asset_name}** will trade within the range of **₹{lower_1sig:,.2f}** and **₹{upper_1sig:,.2f}** over the next {time_horizon}.
 """)
+    
