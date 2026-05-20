@@ -194,9 +194,9 @@ iv = float(instrument_data.get('oi_interest', base_iv))
 if iv <= 0 or iv > 1.5:  
    iv = base_iv
                 
-return spot, iv, f"Upstox Live Feed ({response_key})"
-    else:
-        raise KeyError(f"Key '{response_key}' missing in returned data payload.")
+    return spot, iv, f"Upstox Live Feed ({response_key})"
+     else:
+         raise KeyError(f"Key '{response_key}' missing in returned data payload.")
     else:
         raise Exception(f"HTTP {response.status_code}: {response.text}")
 
