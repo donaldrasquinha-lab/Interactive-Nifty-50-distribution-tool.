@@ -137,22 +137,57 @@ dte_mapping = {"1 Week": 7, "1 Month": 30, "3 Months": 90, "1 Year": 365}
 days_to_target = dte_mapping[time_horizon]
 
 # --- LIVE MARKET DATA ENGINE ---
+# --- LIVE MARKET DATA ENGINE ---
 def fetch_upstox_live_data(token, instrument_key):
     """
     Queries Upstox v2 Market Quote Endpoint for the chosen asset key
     and safely parses active prices and volatility metrics.
     """
-    url = f"https://api.upstox.com/v2/market-quote/quotes?instrument_key={instrument_key}"
-    headers = {'Accept': 'application/json', 'Authorization': f'Bearer {token}'}
+    import urllib.parse
+    
+    # URL-encode the instrument key to turn '|' into '%7C' so the API receives it cleanly
+    encoded_key = urllib.parse.quote(instrument_key)
+    url = f"https://api.upstox.com/v2/market-quote/quotes?instrument_key={encoded_key}"
+    
+    headers = {
+        'Accept': 'application/json',
+        'Authorization': f'Bearer {token}'
+    }
+    
     response = requests.get(url, headers=headers)
     
     if response.status_code == 200:
         json_data = response.json()
+        
+        # Upstox shifts the key separator from '|' to ':' inside the returned data dictionary
         response_key = instrument_key.replace("|", ":")
         
-        if 'data' in json_data and response_key in json_data['data']:
-            instrument_data = json_data['data'][response_key]
-            spot = float(instrument_data['last_price'])
+        if 'data' in json_data:
+            # Case-insensitive safety check to handle varying API return states safely
+            data_payload = {k.upper(): v for k, v in json_data['data'].items()}
+            search_target = response_key.upper()
+            
+            if search_target in data_payload:
+                instrument_data = data_payload[search_target]
+                spot = float(instrument_data['last_price'])
+                
+                # Dynamic asset baseline volatility shifts
+                base_iv = 0.24 if "EQ" in search_target else 0.155
+                iv = float(instrument_data.get('oi_interest', base_iv))
+                
+                if iv <= 0 or iv > 1.5:  
+                    iv = base_iv
+                    
+                return spot, iv, f"Upstox Live Feed ({response_key})"
+            else:
+                # Debug helper to show you exactly what keys came back if it fails
+                available_keys = list(json_data['data'].keys())
+                raise KeyError(f"Target '{response_key}' missing. API returned keys: {available_keys}")
+        else:
+            raise KeyError("Malformed API response structure: 'data' property missing.")
+    else:
+        raise Exception(f"HTTP {response.status_code}: {response.text}")
+
             
             # Dynamic asset standard baseline shifts
             base_iv = 0.24 if "BSE_EQ" in instrument_key or "NSE_EQ" in instrument_key else 0.155
