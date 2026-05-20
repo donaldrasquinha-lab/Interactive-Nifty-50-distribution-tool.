@@ -185,18 +185,21 @@ def fetch_upstox_live_data(token, instrument_key):
         raise Exception(f"HTTP {response.status_code}: {response.text}")
 
 
-# Dynamic asset standard baseline shifts
-base_iv = 0.24 if "BSE_EQ" in instrument_key or "NSE_EQ" in instrument_key else 0.155
-iv = float(instrument_data.get('oi_interest', base_iv))
-if iv <= 0 or iv > 1.5:  
-   iv = base_iv
-                
-    return spot, iv, f"Upstox Live Feed ({response_key})"
-     else:
-         raise KeyError(f"Key '{response_key}' missing in returned data payload.")
+                # Dynamic asset standard baseline shifts
+                base_iv = 0.24 if "BSE_EQ" in instrument_key or "NSE_EQ" in instrument_key else 0.155
+                iv = float(instrument_data.get('oi_interest', base_iv))
+                if iv <= 0 or iv > 1.5:  
+                    iv = base_iv
+                                
+                return spot, iv, f"Upstox Live Feed ({response_key})"
+            else:
+                available_keys = list(json_data['data'].keys())
+                raise KeyError(f"Target '{response_key}' missing. API returned keys: {available_keys}")
+        else:
+            raise KeyError("Malformed API response structure: 'data' property missing.")
     else:
         raise Exception(f"HTTP {response.status_code}: {response.text}")
-
+        
 # Execution branch choice based on Token Presence
 if upstox_token and target_instrument_key:
     try:
