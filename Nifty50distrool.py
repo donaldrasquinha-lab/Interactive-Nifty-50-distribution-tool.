@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import requests
+import urllib.parse
 import plotly.graph_objects as go
 from scipy.stats import norm
 
@@ -78,7 +79,7 @@ elif asset_type == "NSE Stocks (Nifty 50)":
         "Mahindra & Mahindra (M&M)": "NSE_EQ|INE101A01026",
         "Maruti Suzuki (MARUTI)": "NSE_EQ|INE585B01010",
         "NTPC Limited (NTPC)": "NSE_EQ|INE733E01010",
-        "Nestle India (NESTLEIND)": "NESTLEIND", # Note: Special Upstox direct string tracking key fallback mapping
+        "Nestle India (NESTLEIND)": "NSE_EQ|INE239A01016",
         "ONGC (ONGC)": "NSE_EQ|INE213A01029",
         "Power Grid Corporation (POWERGRID)": "NSE_EQ|INE752E01010",
         "Reliance Industries (RELIANCE)": "NSE_EQ|INE002A01018",
@@ -137,14 +138,11 @@ dte_mapping = {"1 Week": 7, "1 Month": 30, "3 Months": 90, "1 Year": 365}
 days_to_target = dte_mapping[time_horizon]
 
 # --- LIVE MARKET DATA ENGINE ---
-# --- LIVE MARKET DATA ENGINE ---
 def fetch_upstox_live_data(token, instrument_key):
     """
     Queries Upstox v2 Market Quote Endpoint for the chosen asset key
     and safely parses active prices and volatility metrics.
     """
-    import urllib.parse
-    
     # URL-encode the instrument key to turn '|' into '%7C'
     encoded_key = urllib.parse.quote(instrument_key)
     url = f"https://api.upstox.com/v2/market-quote/quotes?instrument_key={encoded_key}"
@@ -174,22 +172,6 @@ def fetch_upstox_live_data(token, instrument_key):
                 
                 if iv <= 0 or iv > 1.5:  
                     iv = base_iv
-                    
-                return spot, iv, f"Upstox Live Feed ({response_key})"
-            else:
-                available_keys = list(json_data['data'].keys())
-                raise KeyError(f"Target '{response_key}' missing. API returned keys: {available_keys}")
-        else:
-            raise KeyError("Malformed API response structure: 'data' property missing.")
-    else:
-        raise Exception(f"HTTP {response.status_code}: {response.text}")
-
-
-# Dynamic asset standard baseline shifts
-base_iv = 0.24 if "BSE_EQ" in instrument_key or "NSE_EQ" in instrument_key else 0.155
-                iv = float(instrument_data.get('oi_interest', base_iv))
-                if iv <= 0 or iv > 1.5:  
-                    iv = base_iv
                                 
                 return spot, iv, f"Upstox Live Feed ({response_key})"
             else:
@@ -199,7 +181,7 @@ base_iv = 0.24 if "BSE_EQ" in instrument_key or "NSE_EQ" in instrument_key else 
             raise KeyError("Malformed API response structure: 'data' property missing.")
     else:
         raise Exception(f"HTTP {response.status_code}: {response.text}")
-        
+
 # Execution branch choice based on Token Presence
 if upstox_token and target_instrument_key:
     try:
