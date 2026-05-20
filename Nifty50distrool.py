@@ -188,8 +188,7 @@ def fetch_upstox_live_data(token, instrument_key):
     else:
         raise Exception(f"HTTP {response.status_code}: {response.text}")
 
-            
-            # Dynamic asset standard baseline shifts
+# Dynamic asset standard baseline shifts
             base_iv = 0.24 if "BSE_EQ" in instrument_key or "NSE_EQ" in instrument_key else 0.155
             iv = float(instrument_data.get('oi_interest', base_iv))
             if iv <= 0 or iv > 1.5:  
