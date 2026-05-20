@@ -98,6 +98,7 @@ time_horizon = st.sidebar.selectbox("Select Prediction Horizon", ["1 Week", "1 M
 dte_mapping = {"1 Week": 7, "1 Month": 30, "3 Months": 90, "1 Year": 365}
 days_to_target = dte_mapping[time_horizon]
 
+
 # --- LIVE MARKET DATA ENGINE ---
 def fetch_upstox_live_data(token, instrument_key):
     """
@@ -120,6 +121,7 @@ def fetch_upstox_live_data(token, instrument_key):
         json_data = response.json()
         response_key = instrument_key.replace("|", ":").upper()
         
+        # Check if Upstox returned a valid data object
         if 'data' in json_data and json_data['data']:
             data_payload = {k.upper(): v for k, v in json_data['data'].items()}
             
@@ -136,23 +138,37 @@ def fetch_upstox_live_data(token, instrument_key):
                 return spot, iv, f"Upstox Live Feed ({response_key})"
             else:
                 available_keys = list(json_data['data'].keys())
-                raise KeyError(f"Target key '{response_key}' missing. API keys returned: {available_keys}")
+                raise KeyError(f"Target key '{response_key}' missing from subscription data feed.")
         else:
-            raise KeyError(f"API data container dropped query for: {instrument_key}. Verify token permissions.")
+            # Raise an explicit segment access exception if the payload container drops empty
+            raise PermissionError(f"Your Upstox account or App Token lacks subscription access to the '{instrument_key.split('|')[0]}' market segment.")
     else:
         raise Exception(f"HTTP {response.status_code}: {response.text}")
 
-# Execution branch choice based on Token Presence
+
+# --- EXECUTION ENGINE WITH GRACEFUL FALLBACK ---
+# Dynamic asset logic to generate intelligent mock baselines if the API blocks segments
+is_equity = "EQ" in target_instrument_key if target_instrument_key else True
+default_spot = 450.00 if "WIPRO" in str(target_instrument_key) else 2450.00
+default_iv = 0.24 if is_equity else 0.155
+
 if upstox_token and target_instrument_key:
     try:
         spot_price, implied_vol, data_source = fetch_upstox_live_data(upstox_token, target_instrument_key)
-        st.sidebar.success(f"✅ Connected to API Engine")
+        st.sidebar.success(f"✅ Connected to Live Feed")
+    except PermissionError as pe:
+        # Gracefully handle segment restrictions (e.g., account segment inactive)
+        st.sidebar.warning("⚠️ Segment Restricted")
+        st.sidebar.info("Using simulated data fallback. Your Upstox token doesn't have access to this asset's active segment yet.")
+        spot_price, implied_vol, data_source = default_spot, default_iv, f"Simulation (Restricted Segment)"
     except Exception as e:
+        # Catch network, parsing, or credential authentication exceptions
         st.sidebar.error(f"❌ Pull Failed. Using baseline simulation numbers.")
         st.sidebar.code(f"Error details: {str(e)}")
-        spot_price, implied_vol, data_source = (2450.00, 0.24, "Simulated Equity Base") if "EQ" in target_instrument_key else (22350.00, 0.155, "Simulated Index Base")
+        spot_price, implied_vol, data_source = default_spot, default_iv, "Simulated Base Data"
 else:
-    spot_price, implied_vol, data_source = (2450.00, 0.24, "Simulated Equity Base") if "EQ" in target_instrument_key else (22350.00, 0.155, "Simulated Index Base")
+    spot_price, implied_vol, data_source = default_spot, default_iv, "Simulated Base Data"
+
 
 # --- VOLATILITY MATHEMATICS CALCULATIONS ---
 standard_deviation = spot_price * implied_vol * np.sqrt(days_to_target / 365)
