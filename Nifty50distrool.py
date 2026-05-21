@@ -202,10 +202,6 @@ st.sidebar.markdown('<div class="sidebar-title">OI Analyzer Pro</div>', unsafe_a
 st.sidebar.markdown("---")
 
 
-# Fetch Expiries Array
-expiries_list = client.get_expiries(instrument_key)
-selected_expiry = st.sidebar.selectbox("Select Expiry Date:", expiries_list)
-
 # Volatility and Parameters Configuration Widgets
 st.sidebar.header("🔧 Alpha System Multipliers")
 iv_percent = st.sidebar.slider("Implied Volatility (IV %)", 5.0, 40.0, 12.0, 0.5) / 100
