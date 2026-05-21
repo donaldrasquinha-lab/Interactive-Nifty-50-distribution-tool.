@@ -4,14 +4,18 @@ import matplotlib.pyplot as plt
 from scipy.stats import norm
 import requests
 
-# 1. Page Configuration
+# 1. Page Configuration & Theme Setup
 st.set_page_config(page_title="Upstox Multi-Index OI Dashboard", layout="wide")
 st.title("⚡ Upstox Live Multi-Index OI & Statistical Dashboard")
 st.markdown("---")
 
-# 2. Control Panel & Token Configuration
+# 2. Sidebar Control Panel & Token Configuration
 st.sidebar.header("🔑 Authentication & Setup")
-upstox_token = st.sidebar.text_input("Upstox Access Token (Bearer)", type="password", help="Paste your morning authenticated API access token here.")
+upstox_token = st.sidebar.text_input(
+    "Upstox Access Token (Bearer)", 
+    type="password", 
+    help="Paste your morning authenticated API access token here."
+)
 
 st.sidebar.header("🎯 Asset Configuration")
 selected_index = st.sidebar.selectbox(
@@ -38,7 +42,7 @@ days_to_expiry = st.sidebar.number_input("Days to Expiry (For SD Calculation)", 
 st.sidebar.header("🛠️ Risk Controls")
 show_adjustment = st.sidebar.checkbox("Overlay Recommended Adjustment Leg", value=True)
 
-# 3. Live Upstox Data Fetching Architecture
+# 3. Live Upstox Data Fetching Architecture (Fallback to Mock System if Empty)
 spot_price = index_map[selected_index]["default_spot"]
 atm_strike = int(round(spot_price / oi_step) * oi_step)
 oi_wall_strike = atm_strike + oi_step
@@ -49,13 +53,12 @@ is_live = False
 
 if upstox_token:
     try:
-        # Fetch Live Feed Data
         headers = {
             'Accept': 'application/json',
             'Authorization': f'Bearer {upstox_token}'
         }
         
-        # 1. Fetch Spot Price using Market Quote v2 API
+        # A. Fetch Spot Price using Market Quote v2 API
         quote_url = f'https://upstox.com{instrument_key}'
         quote_res = requests.get(quote_url, headers=headers).json()
         
@@ -64,16 +67,13 @@ if upstox_token:
             atm_strike = int(round(spot_price / oi_step) * oi_step)
             is_live = True
             
-        # 2. Fetch Option Chain API Data
+        # B. Fetch Option Chain API Data
         chain_url = f'https://upstox.com{instrument_key}'
         chain_res = requests.get(chain_url, headers=headers).json()
         
         if chain_res.get('status') == 'success' and len(chain_res['data']) > 0:
-            # Map chain out to find the highest call OI strike
             max_oi = -1
             best_oi_strike = atm_strike + oi_step
-            
-            # Temporary lookups for closest matching options prices
             premium_lookup = {}
             
             for item in chain_res['data']:
@@ -91,41 +91,46 @@ if upstox_token:
             atm_premium = premium_lookup.get(atm_strike, 150)
             oi_wall_premium = premium_lookup.get(oi_wall_strike, 60)
             
-            # Define hedge target boundary at a higher strike away from the wall
+            # Define hedge target boundary strike level
             hedge_strike_target = oi_wall_strike + (oi_wall_strike - atm_strike)
             hedge_premium = premium_lookup.get(hedge_strike_target, 20)
             
     except Exception as e:
         st.sidebar.error(f"API Feed Sync Offline. Reverting to Simulation. Error: {str(e)}")
 
-# Display Data Stream Mode
+# Display Data Connection Status Ribbon
 if is_live:
     st.success(f"🟢 Connected Live to Upstox API • Syncing Data for {selected_index}")
 else:
     st.warning(f"🟡 Running in Simulation Mode (No Token Found) • Displaying Baseline Parameters for {selected_index}")
 
-# 4. Mathematical Engine Setup
+# 4. Mathematical Engine Setup (68-95-99.7 Rule)
 one_sd_move = spot_price * iv_percent * np.sqrt(days_to_expiry / 365)
 sd1_lower, sd1_upper = spot_price - one_sd_move, spot_price + one_sd_move
 sd2_lower, sd2_upper = spot_price - (2 * one_sd_move), spot_price + (2 * one_sd_move)
 
-# Option Strategy Coordinates
+# Option Strategy Target Coordinates
 strike_buy = atm_strike
 strike_sell = oi_wall_strike
 strike_hedge = strike_sell + (strike_sell - strike_buy)
 
-# Generate Expiry Price Range Arrays
+# Order Quantities Defined Outside Math Expressions to Fix Syntax Errors
+qty_buy = 1
+qty_sell = 2
+qty_hedge = 1
+
+# Generate Expiry Price Range Grid Arrays
 x = np.linspace(spot_price - (3 * one_sd_move), spot_price + (3 * one_sd_move), 2000)
 
-# Payoff Math Formulas
-payoff_buy = (np.maximum(x - strike_buy, 0) - atm_premium) * qty_buy = 1
-payoff_sell = (oi_wall_premium - np.maximum(x - strike_sell, 0)) * qty_sell = 2
+# Calculate Core Strategy Payoffs
+payoff_buy = (np.maximum(x - strike_buy, 0) - atm_premium) * qty_buy
+payoff_sell = (oi_wall_premium - np.maximum(x - strike_sell, 0)) * qty_sell
 y_initial = (payoff_buy + payoff_sell) * lot_size
 
-payoff_hedge = (np.maximum(x - strike_hedge, 0) - hedge_premium) * 1
+payoff_hedge = (np.maximum(x - strike_hedge, 0) - hedge_premium) * qty_hedge
 y_adjusted = y_initial + (payoff_hedge * lot_size)
 
-# Break-even Boundaries
+# Strategy Break-even Boundaries
 lower_be = strike_buy + (atm_premium - (2 * oi_wall_premium))
 upper_be = strike_sell + ((strike_sell - strike_buy) - (atm_premium - (2 * oi_wall_premium)))
 
@@ -138,7 +143,7 @@ with col_left:
     fig_p, ax_p = plt.subplots(figsize=(10, 4.5))
     ax_p.plot(x, prob_density, color='#475569', linewidth=2)
     
-    # Fill confidence intervals
+    # Fill standard deviation confidence bands
     ax_p.fill_between(x, prob_density, 0, where=(x >= sd1_lower) & (x <= sd1_upper), facecolor='#10b981', alpha=0.3, label='68.2% (1 SD)')
     ax_p.fill_between(x, prob_density, 0, where=((x >= sd2_lower) & (x < sd1_lower)) | ((x > sd1_upper) & (x <= sd2_upper)), facecolor='#f59e0b', alpha=0.2, label='95.4% (2 SD)')
     
@@ -178,7 +183,7 @@ with col_right:
     ax_t.grid(True, linestyle=":", alpha=0.5)
     st.pyplot(fig_t)
 
-# 6. Trade Matrix and Dynamic Order Output
+# 6. Execution Matrix and Dynamic Order Output Data Tables
 st.markdown("---")
 st.subheader("📋 Executable Order Matrix & Live Recommendations")
 col_rec1, col_rec2 = st.columns(2)
@@ -188,9 +193,9 @@ with col_rec1:
     initial_data = {
         "Action": ["🟢 BUY (ATM Strike)", "🔴 SELL (OI Wall Strike)"],
         "Option Strike": [f"{strike_buy} CE", f"{strike_sell} CE"],
-        "Lots / Qty": [f"1 Lot ({lot_size} Qty)", f"2 Lots ({lot_size * 2} Qty)"],
+        "Lots / Qty": [f"{qty_buy} Lot ({lot_size} Qty)", f"{qty_sell} Lots ({lot_size * qty_sell} Qty)"],
         "Premium (LTP)": [f"₹{int(atm_premium)}", f"₹{int(oi_wall_premium)}"],
-        "Margin Impact": [f"-₹{int(atm_premium * lot_size)}", f"+₹{int(oi_wall_premium * 2 * lot_size)}"]
+        "Margin Impact": [f"-₹{int(atm_premium * lot_size)}", f"+₹{int(oi_wall_premium * qty_sell * lot_size)}"]
     }
     st.table(initial_data)
 
@@ -203,7 +208,7 @@ with col_rec2:
         adj_data = {
             "Action": ["🟢 BUY (OTM Protection)"],
             "Option Strike": [f"{strike_hedge} CE"],
-            "Lots / Qty": [f"1 Lot ({lot_size} Qty)"],
+            "Lots / Qty": [f"{qty_hedge} Lot ({lot_size} Qty)"],
             "Premium (LTP)": [f"₹{int(hedge_premium)}"],
             "Margin Impact": [f"-₹{int(hedge_premium * lot_size)}"]
         }
