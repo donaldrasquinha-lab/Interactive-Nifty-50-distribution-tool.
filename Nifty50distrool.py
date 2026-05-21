@@ -1,8 +1,8 @@
 """
 ╔══════════════════════════════════════════════════════════════╗
-║         UPSTOX ALPHA TRADING ENGINE — Options Intelligence   ║
-║  Injects Volatility Skew, Money Velocity, and Trend Guards  ║
-║  to calculate high-probability options execution signals.   ║
+║         UPSTOX ALPHA TRADING ENGINE — Live Options Matrix     ║
+║  Pulls live values, analyzes CE/PE metrics around ATM,      ║
+║  and features automated refresh triggers for active trading.║
 ╚══════════════════════════════════════════════════════════════╝
 """
 
@@ -14,10 +14,11 @@ import requests
 import json
 import pandas as pd
 from datetime import datetime, timedelta
+import time
 
 # ── 1. Page Configuration & Scaffold Setup ──
 st.set_page_config(
-    page_title="Upstox Alpha Signal Engine",
+    page_title="Upstox Alpha Live Signal Engine",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -51,12 +52,11 @@ div[data-testid="stMetric"] div[data-testid="stMetricValue"] {
 .sidebar-header { font-size: 11px; letter-spacing: 3px; color: #0284c7; font-weight: 600; text-transform: uppercase; }
 .sidebar-title { font-size: 20px; font-weight: 700; color: #0f172a; margin-top: 2px; }
 
-/* FIXED: Omitted the full header visibility override to preserve Streamlit's native sidebar call-back toggle button */
 footer { visibility: hidden; }
 </style>
 """, unsafe_allow_html=True)
 
-# ── Title Bar Placed Fixed on Top ──
+# ── Title Bar Fixed on Top ──
 st.title("⚡ Upstox Live Multi-Index OI & Statistical Dashboard")
 
 # ── 2. Sidebar Control Panel & Token Configuration ──
@@ -64,7 +64,12 @@ st.sidebar.markdown('<div class="sidebar-header">Upstox Analytics</div>', unsafe
 st.sidebar.markdown('<div class="sidebar-title">Alpha Signal Engine</div>', unsafe_allow_html=True)
 st.sidebar.markdown("---")
 
-upstox_token = st.sidebar.text_input("Upstox Access Token (Bearer)", type="password")
+upstox_token = st.sidebar.text_input(
+    "Upstox Access Token (Bearer)", 
+    type="password",
+    help="Paste your morning authenticated API access token here."
+)
+
 selected_index = st.sidebar.selectbox("Target Asset Index:", ["Nifty 50", "Nifty Bank", "Financial Services"])
 
 index_map = {
@@ -77,6 +82,7 @@ lot_size = index_map[selected_index]["lot_size"]
 instrument_key = index_map[selected_index]["key"]
 oi_step = index_map[selected_index]["oi_step"]
 
+# DYNAMIC CALENDAR CALCULATOR: Looks up current machine clock to find active Thursday
 today = datetime.now()
 days_until_thursday = (3 - today.weekday()) % 7
 if days_until_thursday == 0 and today.hour >= 16:
@@ -88,6 +94,11 @@ st.sidebar.header("🔧 Alpha System Multipliers")
 iv_percent = st.sidebar.slider("Implied Volatility (IV %)", 5.0, 40.0, 12.0, 0.5) / 100
 days_to_expiry = st.sidebar.number_input("Days to Expiry (DTE Scalar)", 1, 30, max(1, days_until_thursday))
 show_adjustment = st.sidebar.checkbox("Overlay Recommended Adjustment Leg", value=True)
+
+# AUTOMATED TICK LOOP CONTROLS
+st.sidebar.header("⏱️ Live Ticker Automations")
+auto_refresh = st.sidebar.checkbox("Enable Real-Time Streaming (Auto Rerun)", value=False)
+refresh_interval = st.sidebar.slider("Refresh Data Every (Seconds)", min_value=2, max_value=30, value=5)
 
 # ── 3. State Core Real-Time Ingestion Layer ──
 spot_price = index_map[selected_index]["default_spot"]
@@ -143,7 +154,7 @@ if upstox_token:
                     processed_records = []
                     timestamp_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     
-                    first_row = raw_data[0]
+                    first_row = raw_data[0] if isinstance(raw_data, list) else raw_data
                     sample_leg = first_row.get('call_options') or first_row.get('put_options')
                     if sample_leg:
                         detected_expiry = sample_leg.get('metadata', {}).get('expiry_date', computed_expiry_str)
@@ -200,7 +211,10 @@ if upstox_token:
                     pd.DataFrame(processed_records).to_csv(f"{filename_prefix}_chain_latest.csv", index=False)
                     with open(f"{filename_prefix}_snapshot.json", "w") as j_file:
                         json.dump({"index": selected_index, "live_spot": spot_price, "chain_matrix": processed_records}, j_file, indent=4)
-                    st.sidebar.success("💾 Alpha Snapshot Saved!")
+            else:
+                st.sidebar.warning("Option Chain connection refused. Running simulation overlay.")
+        else:
+            st.sidebar.error("Token verification rejected by gateway. Loading mathematical emulations.")
     except Exception:
         pass
 
@@ -227,21 +241,20 @@ f4_signal_score = 25 if not is_explosive_trend else 5
 
 alpha_composite_signal = int((f1_signal_score + f2_signal_score + f3_signal_score + f4_signal_score) * trend_guard_multiplier)
 
-# RESTORED: Indicator layout logic handles dynamic BUY / SELL / HOLD based on strategy trends
 if is_explosive_trend:
     signal_classification = "EXPLOSIVE TREND OVERHEAD: HOLD EXECUTION"
-    signal_theme_color = "#ea580c"  # Amber warning
+    signal_theme_color = "#ea580c"  
 elif alpha_composite_signal >= 60:
     signal_classification = "STRONG BULLISH SPREAD ENTRY: BUY"
-    signal_theme_color = "#16a34a"  # Green buy
+    signal_theme_color = "#16a34a"  
 else:
     signal_classification = "OVERHEAD RESISTANCE LOCKED: SELL SPREAD"
-    signal_theme_color = "#dc2626"  # Red sell
+    signal_theme_color = "#dc2626"  
 
-# ── 4. Metric Panels Plotted Directly Under the Title Bar ──
+# ── 4. Metric Panels Plotted Directly Under Title Bar ──
 col_m1, col_m2, col_m3, col_m4, col_m5 = st.columns(5)
 with col_m1:
-    st.metric(label=f"🎯 {selected_index} Spot", value=f"₹{spot_price:,.2f}", delta="Live Feed" if is_live else "Simulated Engine")
+    st.metric(label=f"🎯 {selected_index} Spot", value=f"₹{spot_price:,.2f}", delta="Live values Active" if is_live else "Simulated Values")
 with col_m2:
     st.metric(label="📊 Put-Call Ratio (PCR)", value=f"{live_pcr}", delta=f"Velocity Ratio: {money_velocity_ratio}")
 with col_m3:
@@ -256,7 +269,7 @@ st.markdown(f"""
 <div class="direction-card" style="background: {signal_theme_color}; border-color: {signal_theme_color}; color: #ffffff;">
     <div class="score-label">⚡ UPSTOX QUANTALPHA SIGNAL MATRIX Engine</div>
     <div class="direction-text">{signal_classification} ({alpha_composite_signal}/100)</div>
-    <div class="sentiment-text">Trades filtered using dynamic premium lookahead windows, Intraday Change in OI acceleration velocity profiles, and trend guard multipliers.</div>
+    <div class="sentiment-text">Trades filtered using dynamic premium lookahead windows, Intraday Change in OI acceleration velocity profiles, and trend guard multipliers. Last calculated: {datetime.now().strftime('%H:%M:%S')}</div>
 </div>
 """, unsafe_allow_html=True)
 
@@ -351,3 +364,8 @@ with col_rec2:
             "Margin Impact": [f"-₹{int(hedge_premium * lot_size)}"]
         }
         st.table(adj_data)
+
+# ── 9. Automated Streaming Rerun Controller Loops ──
+if auto_refresh:
+    time.sleep(refresh_interval)
+    st.rerun()
