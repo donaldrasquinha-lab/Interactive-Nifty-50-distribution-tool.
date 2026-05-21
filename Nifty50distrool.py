@@ -1249,9 +1249,10 @@ try:
 
                 summary_color = "#4ade80" if net_credit > 0 else "#f87171"
 
-# The condition MUST wrap around the call, never sit at the end
+# 1. Move the condition cleanly to its own line above the call
 if max_l != 0:
     rr_ratio = abs(max_p / max_l)
+    
     st.markdown(f"""
     <div style="border:1px solid #1e293b; border-radius:10px; padding:16px; margin:10px 0;
                 background:rgba(17,24,39,0.6); display:flex; flex-wrap:wrap; gap:24px; align-items:center;">
