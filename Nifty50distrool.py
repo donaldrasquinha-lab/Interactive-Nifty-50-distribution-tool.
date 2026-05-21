@@ -966,15 +966,21 @@ try:
                     zeroline=False,
                 ),
             )
-            # Mark current spot
+            # Mark current spot on categorical axis
             current_label = f"{int(round(spot_price / diff) * diff):,}"
-            fig_hm.add_vline(
-                x=current_label,
-                line=dict(color="#fbbf24", width=2.5, dash="solid"),
-                annotation_text="▼ You Are Here",
-                annotation_position="top",
-                annotation=dict(font=dict(size=11, color="#fbbf24", family="Inter"), showarrow=False),
-            )
+            if current_label in spot_labels:
+                idx = spot_labels.index(current_label)
+                fig_hm.add_shape(
+                    type="line", x0=idx, x1=idx, y0=-0.5, y1=len(dte_arr)-0.5,
+                    xref="x", yref="y",
+                    line=dict(color="#fbbf24", width=2.5, dash="solid"),
+                )
+                fig_hm.add_annotation(
+                    x=idx, y=-0.5, xref="x", yref="y",
+                    text="▼ You Are Here", showarrow=False,
+                    font=dict(size=11, color="#fbbf24", family="Inter"),
+                    yshift=-16,
+                )
             st.plotly_chart(fig_hm, use_container_width=True)
 
             # ── Payoff at Expiry — simplified ──
