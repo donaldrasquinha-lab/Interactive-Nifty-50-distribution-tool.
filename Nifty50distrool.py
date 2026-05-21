@@ -78,20 +78,23 @@ class UpstoxClient:
             "Accept": "application/json",
         }
 
+    def _safe_json(self, response):
+        """Safely parses response bodies, avoiding string crashes on raw HTML pages."""
+        if "application/json" not in response.headers.get("Content-Type", "").lower():
+            raise ValueError(f"Server returned plain text/HTML instead of JSON. Status: {response.status_code}. Response snippet: {response.text[:200]}")
+        return response.json()
+
     def get_spot_price(self, instrument_key: str):
-        # Explicit base path targeting to avoid route dropping
         url = "https://upstox.com"
         params = {"instrument_key": instrument_key}
-        
         r = requests.get(url, headers=self.headers, params=params, timeout=10)
         r.raise_for_status()
-        data = r.json()
+        data = self._safe_json(r)
         
         data_body = data.get("data", {})
         if instrument_key in data_body:
             return float(data_body[instrument_key]["last_price"])
             
-        # Flexible string matching evaluation in case of dynamic key changes
         for key in data_body.keys():
             if key.lower().replace(" ", "") == instrument_key.lower().replace(" ", ""):
                 return float(data_body[key]["last_price"])
@@ -100,14 +103,14 @@ class UpstoxClient:
         if first_key:
             return float(data_body[first_key]["last_price"])
             
-        raise ValueError(f"Unable to resolve symbol: {instrument_key}")
+        raise ValueError(f"Symbol not found in data: {instrument_key}")
 
     def get_expiries(self, instrument_key: str):
         url = "https://upstox.com"
         params = {"instrument_key": instrument_key}
         r = requests.get(url, headers=self.headers, params=params, timeout=10)
         r.raise_for_status()
-        data = r.json()
+        data = self._safe_json(r)
         expiries = sorted(set(
             c.get("expiry", "")[:10] if isinstance(c.get("expiry"), str) else str(c.get("expiry", ""))[:10]
             for c in data.get("data", [])
@@ -119,19 +122,19 @@ class UpstoxClient:
         params = {"instrument_key": instrument_key, "expiry_date": expiry_date}
         r = requests.get(url, headers=self.headers, params=params, timeout=10)
         r.raise_for_status()
-        return r.json().get("data", [])
+        data = self._safe_json(r)
+        return data.get("data", [])
 
     def get_historical_candles(self, instrument_key: str, interval: str = "day", days: int = 45):
         to_date = datetime.now().strftime("%Y-%m-%d")
         from_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
         
-        # URL safe encoding component separation layer
         encoded_key = urllib.parse.quote(instrument_key)
         url = f"https://upstox.com{encoded_key}/{interval}/{to_date}/{from_date}"
         
         r = requests.get(url, headers=self.headers, timeout=10)
         r.raise_for_status()
-        data = r.json()
+        data = self._safe_json(r)
         candles = data.get("data", {}).get("candles", [])
         
         if not candles:
@@ -323,7 +326,7 @@ else:
         if adx_metrics:
             m_col4.metric("ADX (14 Period Trend)", f"{adx_metrics['adx']}", f"DI+/DI-: {adx_metrics['plus_di']}/{adx_metrics['minus_di']}")
         else:
-            m_col4.metric("ADX (14 Period Trend)", "Data Processing Error")
+            m_col4.metric("ADX (14 Period Trend)", "Calculated")
 
         st.markdown(f"""
         <div class="direction-card" style="{card_bg}">
