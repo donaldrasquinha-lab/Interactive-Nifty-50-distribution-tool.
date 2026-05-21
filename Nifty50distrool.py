@@ -60,7 +60,6 @@ footer { visibility: hidden; }
 st.title("⚡ Upstox Live Multi-Index OI & Statistical Dashboard")
 
 # ── Index Definitions ──
-# Corrected master instrument tokens matching Upstox asset dictionaries
 INDICES = {
     "NIFTY 50": {"key": "NSE_INDEX|Nifty 50", "symbol": "NIFTY", "diff": 50},
     "BANK NIFTY": {"key": "NSE_INDEX|Nifty Bank", "symbol": "BANKNIFTY", "diff": 100},
@@ -70,7 +69,7 @@ INDICES = {
 
 # ── Upstox API Helper ──
 class UpstoxClient:
-    BASE = "https://api.upstox.com/v2"
+    BASE = "https://upstox.com"
 
     def __init__(self, token: str):
         self.headers = {
@@ -80,17 +79,14 @@ class UpstoxClient:
 
     def get_spot_price(self, instrument_key: str):
         url = f"{self.BASE}/market-quote/quotes"
-        # Passing parameter exactly configured as 'instrument_key' query string 
         params = {"instrument_key": instrument_key}
         r = requests.get(url, headers=self.headers, params=params, timeout=10)
         r.raise_for_status()
         data = r.json()
         
-        # Safe extraction guarding against malformed responses or errors
         if "data" in data and instrument_key in data["data"]:
             return float(data["data"][instrument_key]["last_price"])
         else:
-            # Fallback check if the key returns encoded or formatted variations
             first_key = list(data.get("data", {}).keys())[0]
             return float(data["data"][first_key]["last_price"])
 
@@ -112,12 +108,11 @@ class UpstoxClient:
         r.raise_for_status()
         return r.json().get("data", [])
 
-    def get_historical_candles(self, instrument_key: str, interval: str = "day", days: int = 30):
-        """Fetch historical data. Fixed path sequencing format layout matching Upstox V2 specs."""
+    def get_historical_candles(self, instrument_key: str, interval: str = "day", days: int = 45):
+        """Fetch historical data. Explicitly unpack nested candles arrays by explicit indexes."""
         to_date = datetime.now().strftime("%Y-%m-%d")
         from_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
         
-        # Upstox V2 path template layout structure requirement: /historical-candle/{instrumentKey}/{interval}/{to_date}/{from_date}
         url = f"{self.BASE}/historical-candle/{instrument_key}/{interval}/{to_date}/{from_date}"
         r = requests.get(url, headers=self.headers, timeout=10)
         r.raise_for_status()
@@ -126,19 +121,27 @@ class UpstoxClient:
         
         if not candles:
             return pd.DataFrame()
+            
         rows = []
         for c in candles:
-            rows.append({
-                "timestamp": c[0], "open": c[1], "high": c[2],
-                "low": c[3], "close": c[4], "volume": c[5],
-            })
+            # Explicit unpacking mapping to handle Upstox numeric index positions
+            # [timestamp, open, high, low, close, volume, open_interest]
+            if len(c) >= 5:
+                rows.append({
+                    "timestamp": c[0],
+                    "open": float(c[1]),
+                    "high": float(c[2]),
+                    "low": float(c[3]),
+                    "close": float(c[4])
+                })
+        # Sort ascending order so shift analytics build indicators chronologically
         cdf = pd.DataFrame(rows).sort_values("timestamp").reset_index(drop=True)
         return cdf
 
 
 def compute_adx(candles_df: pd.DataFrame, period: int = 14):
     """Compute ADX, +DI, -DI from OHLC candle data using Wilder's smoothing method."""
-    if candles_df.empty or len(candles_df) < period + 2:
+    if candles_df.empty or len(candles_df) < (period * 2 + 2):
         return None
 
     df = candles_df.copy()
@@ -256,9 +259,9 @@ else:
         time_to_expiry_days = (expiry_dt - datetime.now()).total_seconds() / (86400 * 365)
         time_to_expiry_days = max(time_to_expiry_days, 0.0001) 
         
-        # Fetch technical structure indicators
+        # Fetch technical structure indicators with an expanded safety history lookback window
         with st.spinner("Analyzing Index Volatility Structure..."):
-            candles_df = client.get_historical_candles(index_meta["key"], interval="day", days=30)
+            candles_df = client.get_historical_candles(index_meta["key"], interval="day", days=45)
             adx_metrics = compute_adx(candles_df)
             chain_raw = client.get_option_chain(index_meta["key"], selected_expiry)
             
@@ -324,7 +327,7 @@ else:
         if adx_metrics:
             m_col4.metric("ADX (14 Period Trend)", f"{adx_metrics['adx']}", f"DI+/DI-: {adx_metrics['plus_di']}/{adx_metrics['minus_di']}")
         else:
-            m_col4.metric("ADX (14 Period Trend)", "N/A")
+            m_col4.metric("ADX (14 Period Trend)", "Data Window Error")
 
         # HTML Sentiment Block Rendering
         st.markdown(f"""
