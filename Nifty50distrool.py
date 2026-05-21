@@ -15,7 +15,7 @@ import json
 import pandas as pd
 from datetime import datetime, timedelta
 
-# ── 1. Page Configuration & Professional Light Interface ──
+# ── 1. Page Configuration & Clean Light-Theme Layout ──
 st.set_page_config(
     page_title="Upstox Alpha Signal Engine",
     page_icon="⚡",
@@ -35,7 +35,7 @@ div[data-testid="stMetric"] label { color: #64748b !important; font-size: 11px !
 div[data-testid="stMetric"] div[data-testid="stMetricValue"] {
     font-family: 'JetBrains Mono', monospace !important; font-weight: 700 !important; color: #0f172a !important; font-size: 22px !important;
 }
-.signal-card {
+.direction-card {
     border-radius: 14px; padding: 22px; margin: 15px 0; font-family: 'JetBrains Mono', monospace; border: 1px solid #e2e8f0;
 }
 .score-label { font-size: 11px; letter-spacing: 2px; color: #ffffff; opacity: 0.9; margin-bottom: 4px; }
@@ -96,9 +96,9 @@ oi_wall_strike = atm_strike + oi_step
 live_pcr = 0.95
 oi_support = atm_strike - oi_step
 oi_resistance = atm_strike + oi_step
-money_velocity_ratio = 1.05  # COI acceleration indicator
-volatility_skew_index = 1.02 # Real-world skew index
-trend_guard_multiplier = 1.00 # Trend-following safety scalar
+money_velocity_ratio = 1.05  
+volatility_skew_index = 1.02 
+trend_guard_multiplier = 1.00 
 raw_data = []
 
 if upstox_token:
@@ -132,7 +132,8 @@ if upstox_token:
                     processed_records = []
                     timestamp_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     
-                    sample_leg = raw_data[0].get('call_options') or raw_data[0].get('put_options')
+                    first_row = raw_data[0]
+                    sample_leg = first_row.get('call_options') or first_row.get('put_options')
                     if sample_leg:
                         detected_expiry = sample_leg.get('metadata', {}).get('expiry_date', computed_expiry_str)
 
@@ -142,7 +143,6 @@ if upstox_token:
                         pe_data = item.get('put_options', {}).get('market_data', {}) if item.get('put_options') else {}
                         
                         c_oi, p_oi = ce_data.get('oi', 0), pe_data.get('oi', 0)
-                        # Extract Change in OI (COI) velocity components inside data loop
                         c_coi, p_coi = ce_data.get('oi_change', 0), pe_data.get('oi_change', 0)
                         c_iv, p_iv = ce_data.get('implied_volatility', 12.0), pe_data.get('implied_volatility', 12.0)
                         
@@ -151,7 +151,6 @@ if upstox_token:
                         total_call_coi += abs(c_coi)
                         total_put_coi += abs(p_coi)
                         
-                        # Isolate equidistant OTM wings to measure volatility skew metrics
                         if abs(strike - atm_strike) <= (oi_step * 3):
                             total_call_iv += c_iv
                             total_put_iv += p_iv
@@ -172,14 +171,11 @@ if upstox_token:
                             "CE_OI": c_oi, "PE_LTP": pe_data.get('ltp', 0.0), "PE_OI": p_oi
                         })
                     
-                    # ── UPGRADE 1 & 2 Math Calculations ──
                     oi_wall_strike = best_call_strike
                     oi_resistance, oi_support = best_call_strike, best_put_strike
                     live_pcr = round(total_put_oi / total_call_oi, 2) if total_call_oi > 0 else 1.0
                     
-                    # Upgrade 1: Money Velocity Acceleration ratio
                     money_velocity_ratio = round(total_put_coi / total_call_coi, 2) if total_call_coi > 0 else 1.0
-                    # Upgrade 2: Dynamic Real-World Volatility Skew index
                     volatility_skew_index = round(total_put_iv / total_call_iv, 2) if total_call_iv > 0 else 1.0
                     is_live = True
                     
@@ -198,12 +194,18 @@ if upstox_token:
     except Exception:
         pass
 
-# ── UPGRADE 3: Expiry Decay Theta Compressions Scalar ──
-# Linear scaling model penalizes trade size/confidence based on decay efficiency curves
-decay_efficiency_factor = max(0.3, (7.0 - days_to_expiry) / 7.0) if days_to_expiry <= 7 else 0.25
+if not is_live:
+    atm_strike = int(round(spot_price / oi_step) * oi_step)
+    oi_resistance = atm_strike + oi_step
+    oi_support = atm_strike - oi_step
+    oi_wall_strike = oi_resistance
+    
+    total_pe_oi_sim = 24500000
+    total_ce_oi_sim = 22000000
+    live_pcr = round(total_pe_oi_sim / total_ce_oi_sim, 2)
 
-# ── UPGRADE 4: Trend Momentum Guard Intercepts ──
-# Checks if the market is trending heavily inside an explosive breakout tail sequence
+# ── Decay & Trend Guard Multipliers ──
+decay_efficiency_factor = max(0.3, (7.0 - days_to_expiry) / 7.0) if days_to_expiry <= 7 else 0.25
 is_explosive_trend = True if abs(spot_price - atm_strike) > (expected_move * 0.85) else False
 trend_guard_multiplier = 0.50 if is_explosive_trend else 1.00
 
@@ -238,6 +240,12 @@ st.markdown(f"""
     <div class="sentiment-text">Trades filtered using dynamic premium lookahead windows, Intraday Change in OI acceleration velocity profiles, and trend guard multipliers.</div>
 </div>
 """, unsafe_allow_html=True)
+
+# ── 4. Mathematical Engine Setup (68-95-99.7 Rule) ──
+# FIXED: Declared variable explicitly here before downstream rendering arrays call it
+one_sd_move = spot_price * iv_percent * time_factor
+sd1_lower, sd1_upper = spot_price - one_sd_move, spot_price + one_sd_move
+sd2_lower, sd2_upper = spot_price - (2 * one_sd_move), spot_price + (2 * one_sd_move)
 
 # ── 5. Advanced Geometry Strategies Visualization ──
 strike_buy = atm_strike
