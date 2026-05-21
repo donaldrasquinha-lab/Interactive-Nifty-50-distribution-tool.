@@ -501,6 +501,10 @@ try:
     atm_iv = float(atm_row.iloc[0]["CE IV"]) if not atm_row.empty else iv_override * 100
     iv_pct = compute_iv_percentile(candles_df, atm_iv / 100, window=20)
 
+    # Volume-Weighted Average Strike
+    total_vol = df["CE Vol"].sum() + df["PE Vol"].sum()
+    vwas = ((df["Strike"] * (df["CE Vol"] + df["PE Vol"])).sum()) / total_vol if total_vol > 0 else atm_strike
+
     # PCR history in session state for sparkline
     if "pcr_history" not in st.session_state:
         st.session_state.pcr_history = []
@@ -542,15 +546,16 @@ try:
     #  TOP KPI ROW
     # ═══════════════════════════════════════════════
 
-    k1, k2, k3, k4, k5, k6 = st.columns(6)
+    k1, k2, k3, k4, k5, k6, k7 = st.columns(7)
     k1.metric("Spot", f"₹{spot_price:,.2f}")
     k2.metric("ATM", f"{atm_strike:,.0f}")
     k3.metric("PCR", f"{pcr}")
     k4.metric("Max Pain", f"{max_pain:,.0f}")
+    k5.metric("VWAS", f"{vwas:,.0f}")
     adx_val = adx_metrics["adx"] if adx_metrics else None
-    k5.metric("ADX (14)", f"{adx_val}" if adx_val else "—",
+    k6.metric("ADX (14)", f"{adx_val}" if adx_val else "—",
               f"+DI {adx_metrics['plus_di']}/-DI {adx_metrics['minus_di']}" if adx_metrics else None)
-    k6.metric("DTE", f"{tte_days:.1f} days")
+    k7.metric("DTE", f"{tte_days:.1f} days")
 
     # ── IV Percentile Gauge ──
     iv_color = "#22c55e" if iv_pct < 30 else "#f59e0b" if iv_pct < 70 else "#ef4444"
@@ -1199,23 +1204,6 @@ try:
             title=dict(text="Cumulative OI Build-up", font=dict(size=13)),
             xaxis_title="Strike", yaxis_title="Cumulative OI")
         st.plotly_chart(fig_cum, use_container_width=True)
-
-        # Volume-Weighted Average Strike
-        total_vol = df["CE Vol"].sum() + df["PE Vol"].sum()
-        if total_vol > 0:
-            vwas = ((df["Strike"] * (df["CE Vol"] + df["PE Vol"])).sum()) / total_vol
-            st.markdown(f"""
-            <div style="text-align:center; padding:10px; margin:8px 0;
-                        border:1px solid #1e293b; border-radius:8px; background:rgba(17,24,39,0.5);">
-                <span style="font-size:11px; color:#64748b; text-transform:uppercase; letter-spacing:1.5px;">
-                    Volume-Weighted Avg Strike
-                </span><br>
-                <span style="font-family:'JetBrains Mono',monospace; font-size:24px; font-weight:700; color:#f59e0b;">
-                    {vwas:,.1f}
-                </span>
-                <span style="font-size:12px; color:#64748b;"> &nbsp;(where the money flows)</span>
-            </div>
-            """, unsafe_allow_html=True)
 
     # ═══════════════════════════════════════════════
     #  FOOTER
