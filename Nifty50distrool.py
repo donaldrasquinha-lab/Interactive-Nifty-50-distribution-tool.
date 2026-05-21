@@ -1248,45 +1248,35 @@ try:
                 net_credit_total = net_credit * lot_size
 
                 summary_color = "#4ade80" if net_credit > 0 else "#f87171"
-
-# 1. Properly wrap the block inside a standard Python if statement
-if max_l != 0:
-    # 2. Calculate the risk-reward ratio safely beforehand
-    rr_ratio = abs(max_p / max_l)
-    
-    st.markdown(f"""
-    <div style="border:1px solid #1e293b; border-radius:10px; padding:16px; margin:10px 0;
-                background:rgba(17,24,39,0.6); display:flex; flex-wrap:wrap; gap:24px; align-items:center;">
-        <div>
-            <div style="font-size:10px; color:#64748b; text-transform:uppercase; letter-spacing:1.5px;">You Collect</div>
-            <div style="font-size:22px; font-weight:800; color:{summary_color}; font-family:'JetBrains Mono',monospace;">
-                ₹{net_credit_total:,.0f}
-            </div>
-        </div>
-        <div>
-            <div style="font-size:10px; color:#64748b; text-transform:uppercase; letter-spacing:1.5px;">Best Case</div>
-            <div style="font-size:22px; font-weight:800; color:#4ade80; font-family:'JetBrains Mono',monospace;">
-                ₹{max_p:,.0f}
-            </div>
-        </div>
-        <div>
-            <div style="font-size:10px; color:#64748b; text-transform:uppercase; letter-spacing:1.5px;">Worst Case</div>
-            <div style="font-size:22px; font-weight:800; color:#f87171; font-family:'JetBrains Mono',monospace;">
-                ₹{max_l:,.0f}
-            </div>
-        </div>
-        <div>
-            <div style="font-size:10px; color:#64748b; text-transform:uppercase; letter-spacing:1.5px;">Risk:Reward</div>
-            <div style="font-size:22px; font-weight:800; color:#e2e8f0; font-family:'JetBrains Mono',monospace;">
-                1 : {rr_ratio:.1f}
-            </div>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-else:
-    # Optional: Handle the case where max_l is 0 (e.g., risk-free strategy like a long box spread)
-    st.info("Risk-free position or invalid metrics layout.")
-
+                st.markdown(f"""
+                <div style="border:1px solid #1e293b; border-radius:10px; padding:16px; margin:10px 0;
+                            background:rgba(17,24,39,0.6); display:flex; flex-wrap:wrap; gap:24px; align-items:center;">
+                    <div>
+                        <div style="font-size:10px; color:#64748b; text-transform:uppercase; letter-spacing:1.5px;">You Collect</div>
+                        <div style="font-size:22px; font-weight:800; color:{summary_color}; font-family:'JetBrains Mono',monospace;">
+                            ₹{net_credit_total:,.0f}
+                        </div>
+                    </div>
+                    <div>
+                        <div style="font-size:10px; color:#64748b; text-transform:uppercase; letter-spacing:1.5px;">Best Case</div>
+                        <div style="font-size:22px; font-weight:800; color:#4ade80; font-family:'JetBrains Mono',monospace;">
+                            ₹{max_p:,.0f}
+                        </div>
+                    </div>
+                    <div>
+                        <div style="font-size:10px; color:#64748b; text-transform:uppercase; letter-spacing:1.5px;">Worst Case</div>
+                        <div style="font-size:22px; font-weight:800; color:#f87171; font-family:'JetBrains Mono',monospace;">
+                            ₹{max_l:,.0f}
+                        </div>
+                    </div>
+                    <div>
+                        <div style="font-size:10px; color:#64748b; text-transform:uppercase; letter-spacing:1.5px;">Risk:Reward</div>
+                        <div style="font-size:22px; font-weight:800; color:#e2e8f0; font-family:'JetBrains Mono',monospace;">
+                            1 : {abs(max_p/max_l):.1f}
+                        </div>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True) if max_l != 0 else None
 
     # ──────────────────────────────────
     #  TAB 4: CHARTS
