@@ -202,7 +202,8 @@ with col_right:
         ax_t.text(max_prof_x - 140, max_prof_y - 950, f"Max Profit: ₹{int(max_prof_y)}", fontsize=9, weight='bold', color='#0f766e')
 
     ax_t.axhline(0, color='#475569', linestyle='-', linewidth=1.2)
-    ax_t.scatter([lower_be, upper_be],, color='#b45309', s=60, zorder=5)
+    # PATCH APPLIED HERE: Added explicitly mapped [0, 0] coordinate parameter array
+    ax_t.scatter([lower_be, upper_be], [0, 0], color='#b45309', s=60, zorder=5)
     ax_t.set_xlim(x.min(), x.max())
     ax_t.grid(True, linestyle=":", alpha=0.5)
     st.pyplot(fig_t)
