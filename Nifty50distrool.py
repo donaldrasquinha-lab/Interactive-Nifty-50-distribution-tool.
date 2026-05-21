@@ -150,7 +150,7 @@ class UpstoxClient:
         for c in candles:
             if len(c) >= 5:
                 rows.append({
-                    "timestamp": c, "open": float(c), "high": float(c), "low": float(c), "close": float(c)
+                    "timestamp": c[0], "open": float(c[1]), "high": float(c[2]), "low": float(c[3]), "close": float(c[4])
                 })
         cdf = pd.DataFrame(rows).sort_values("timestamp").reset_index(drop=True)
         return cdf
@@ -386,108 +386,111 @@ else:
         ax_bell.grid(True, linestyle=":", alpha=0.4)
         st.pyplot(fig_bell)
         
-        # ── Dropdown Strategy Analysis Matrix Engine ──
-        st.subheader("🛡️ Automated Options Strategy Evaluation Playbook")
+        # ── Strategy Dropdown Selection & Matrix Logic Engine ──
+        st.subheader("🛡️ Automated Statistical Strategy Playbook")
         
-        selected_strategy = st.selectbox(
-            "⚡ Select Target Volatility Strategy to Calculate Max Profit",
+        # Matrix logic auto-recommendation algorithm
+        adx_val = adx_metrics["adx"] if adx_metrics else 15
+        if adx_val > 25:
+            suggested_strategy = "Switch to Debit Spreads / Long Options (Trending Market)"
+        elif iv_override > 0.22:
+            suggested_strategy = "Iron Butterfly"
+        else:
+            suggested_strategy = "Iron Condor"
+            
+        st.info(f"📊 **Matrix Recommendation Engine Output**: Based on an ADX of **{adx_val}** and Implied Volatility of **{iv_override*100:.1f}%**, the historically optimal strategy setup is: **{suggested_strategy}**")
+        
+        selected_strategy_view = st.selectbox(
+            "⚡ Select Active Strategy Playbook View Variant",
             ["Iron Condor", "Short Straddle", "Iron Butterfly"]
         )
         
-        # Extract live matrix data profiles to resolve exact maximum pricing yield configurations
-        try:
-            atm_row = df_chain.loc[df_chain["Strike"] == atm_strike].iloc[0]
-            atm_ce_ltp = float(atm_row["CE LTP"])
-            atm_pe_ltp = float(atm_row["PE LTP"])
-        except:
-            atm_ce_ltp, atm_pe_ltp = 0.0, 0.0
+        # Live premium parsing lookup helper loops
+        def get_prices(strike):
+            match = df_chain[df_chain["Strike"] == strike]
+            if not match.empty:
+                return float(match.iloc[0]["CE LTP"]), float(match.iloc[0]["PE LTP"])
+            return 0.0, 0.0
+
+        if selected_strategy_view == "Iron Condor":
+            c_sell_ce, _ = get_prices(ic_sell_call)
+            _, p_sell_pe = get_prices(ic_sell_put)
+            c_buy_ce, _ = get_prices(ic_buy_call)
+            _, p_buy_pe = get_prices(ic_buy_put)
             
-        try:
-            sp_row = df_chain.loc[df_chain["Strike"] == ic_sell_put].iloc[0]
-            sc_row = df_chain.loc[df_chain["Strike"] == ic_sell_call].iloc[0]
-            bp_row = df_chain.loc[df_chain["Strike"] == ic_buy_put].iloc[0]
-            bc_row = df_chain.loc[df_chain["Strike"] == ic_buy_call].iloc[0]
+            max_profit = (c_sell_ce + p_sell_pe) - (c_buy_ce + p_buy_pe)
+            max_profit = max(max_profit, 0.0)
             
-            ic_sell_put_ltp = float(sp_row["PE LTP"])
-            ic_sell_call_ltp = float(sc_row["CE LTP"])
-            ic_buy_put_ltp = float(bp_row["PE LTP"])
-            ic_buy_call_ltp = float(bc_row["CE LTP"])
-        except:
-            ic_sell_put_ltp, ic_sell_call_ltp, ic_buy_put_ltp, ic_buy_call_ltp = 0.0, 0.0, 0.0, 0.0
-
-        # Run automated strategy selection matrix rulesets
-        adx_val = adx_metrics["adx"] if adx_metrics else 0.0
-        
-        # Matrix Analysis Status Evaluation
-        if adx_val > 25:
-            matrix_regime = "⚠️ Trend Outbreak Imminent (ADX > 25)"
-            matrix_advice = "Avoid premium selling models. Switch to Debit Spreads or Long directional options."
-            matrix_best = "Avoid Premium Selling"
-        elif adx_val < 20 and iv_override >= 0.25:
-            matrix_regime = "🔥 High Volatility Spike / Range Contraction (ADX < 20 & High IV)"
-            matrix_advice = "Deploy an Iron Butterfly to take advantage of premium decay."
-            matrix_best = "Iron Butterfly"
-        else:
-            matrix_regime = "✅ Standard Range Consolidation (ADX < 20 & Normal IV)"
-            matrix_advice = "Deploy an Iron Condor to collect premium outside the 1-Sigma boundaries."
-            matrix_best = "Iron Condor"
-
-        # Calculate exact Strategy Max Profit metrics from option contract logs
-        max_profit_val = 0.0
-        strategy_summary_text = ""
-        
-        if selected_strategy == "Iron Condor":
-            net_credit = (ic_sell_put_ltp + ic_sell_call_ltp) - (ic_buy_put_ltp + ic_buy_call_ltp)
-            max_profit_val = max(net_credit, 0.0)
-            strategy_summary_text = f"""
-            • <b>Buy Hedge Put:</b> {ic_buy_put} PE (@ ₹{ic_buy_put_ltp:.2f})<br>
-            • <b>Sell Income Put:</b> {ic_sell_put} PE (@ ₹{ic_sell_put_ltp:.2f}) [Floor]<br>
-            • <b>Sell Income Call:</b> {ic_sell_call} CE (@ ₹{ic_sell_call_ltp:.2f}) [Cap]<br>
-            • <b>Buy Hedge Call:</b> {ic_buy_call} CE (@ ₹{ic_buy_call_ltp:.2f})
-            """
-        elif selected_strategy == "Short Straddle":
-            max_profit_val = atm_ce_ltp + atm_pe_ltp
-            strategy_summary_text = f"""
-            • <b>Sell At-The-Money Call:</b> {atm_strike} CE (@ ₹{atm_ce_ltp:.2f})<br>
-            • <b>Sell At-The-Money Put:</b> {atm_strike} PE (@ ₹{atm_pe_ltp:.2f})<br>
-            <span style='color:#ef4444;'>⚠️ Warning: Unhedged strategy layout. Manage dynamically using the 2-Sigma boundaries.</span>
-            """
-        elif selected_strategy == "Iron Butterfly":
-            net_credit = (atm_ce_ltp + atm_pe_ltp) - (ic_buy_call_ltp + ic_buy_put_ltp)
-            max_profit_val = max(net_credit, 0.0)
-            strategy_summary_text = f"""
-            • <b>Buy Hedge Put:</b> {ic_buy_put} PE (@ ₹{ic_buy_put_ltp:.2f})<br>
-            • <b>Sell Income Put:</b> {atm_strike} PE (@ ₹{atm_pe_ltp:.2f})<br>
-            • <b>Sell Income Call:</b> {atm_strike} CE (@ ₹{atm_ce_ltp:.2f})<br>
-            • <b>Buy Hedge Call:</b> {ic_buy_call} CE (@ ₹{ic_buy_call_ltp:.2f})
-            """
-
-        # Render Strategy Playbook Interface Layout Array
-        sc1, sc2 = st.columns(2)
-        with sc1:
             st.markdown(f"""
-            <div class="playbook-card" style="border-left: 5px solid #0284c7;">
-                <div class="playbook-title">📈 Strategy Metric: {selected_strategy}</div>
-                <p style="font-size: 20px; font-weight:700; color: #16a34a; margin: 2px 0;">
-                    Max Profit: ₹ {max_profit_val:.2f} <span style='font-size:12px; color:#64748b;'>per lot unit</span>
-                </p>
-                <div style="font-size: 13px; margin-top: 8px; font-family: 'JetBrains Mono', monospace; line-height:1.5;">
-                    {strategy_summary_text}
-                </div>
+            <div class="playbook-card">
+                <div class="playbook-title">📊 Strategy Configuration Profile: Iron Condor (Risk-Defined)</div>
+                <strong>Execution Leg Array Setup:</strong><br>
+                • Buy Protection Hedge: 1x <b>{ic_buy_put} PE</b> (LTP: ₹{p_buy_pe:.2f})<br>
+                • Sell Premium Floor: 1x <b>{ic_sell_put} PE</b> (LTP: ₹{p_sell_pe:.2f})<br>
+                • Sell Premium Cap: 1x <b>{ic_sell_call} CE</b> (LTP: ₹{c_sell_ce:.2f})<br>
+                • Buy Protection Hedge: 1x <b>{ic_buy_call} CE</b> (LTP: ₹{c_buy_ce:.2f})<br><br>
+                <span style='color: #16a34a; font-size: 16px; font-weight: bold;'>💰 Estimated Net Premium Max Profit: ₹ {max_profit:,.2f} per single derivative unit slot</span>
             </div>
             """, unsafe_allow_html=True)
             
-        with sc2:
-            is_match = selected_strategy.lower() == matrix_best.lower()
-            alert_color = "#166534" if is_match else "#854d0e"
-            bg_color = "#f0fdf4" if is_match else "#fef9c3"
+        elif selected_strategy_view == "Short Straddle":
+            # Short straddle is executed directly at the calculation ATM level
+            c_sell_ce, p_sell_pe = get_prices(atm_strike)
+            max_profit = c_sell_ce + p_sell_pe
             
             st.markdown(f"""
-            <div class="playbook-card" style="background-color: {bg_color}; border: 1px solid #cbd5e1; border-left: 5px solid {alert_color};">
-                <div class="playbook-title" style="color:#0f172a;">📊 Strategy Selection Matrix Diagnostics</div>
-                <div style="font-size: 13px; font-family: 'Outfit', sans-serif;">
-                    <b>Market Regime:</b> {matrix_regime}<br>
-                    <b>Matrix Recommendation:</b> {matrix_advice}<br><br>
-                    <b>Status:</b> {"<span style='color:#16a34a; font-weight:700;'>Optimal Selection Match</span>" if is_match else "<span style='color:#b45309; font-weight:700;'>Alternative Strategy Selected</span>"}
-                </div>
+            <div class="playbook-card">
+                <div class="playbook-title">🔥 Strategy Configuration Profile: Short Straddle (Max Volatility Harvest)</div>
+                <strong>Execution Leg Array Setup:</strong><br>
+                • Sell Short ATM Call Contract: 1x <b>{atm_strike} CE</b> (LTP: ₹{c_sell_ce:.2f})<br>
+                • Sell Short ATM Put Contract: 1x <b>{atm_strike} PE</b> (LTP: ₹{p_sell_pe:.2f})<br><br>
+                <span style='color: #16a34a; font-size: 16px; font-weight: bold;'>💰 Estimated Net Premium Max Profit: ₹ {max_profit:,.2f} per unit slot</span><br>
+                <em>Warning: High risk asset exposure layout. Maintain rigid platform trailing stop losses at 2-Sigma boundaries (₹ {lower_2sigma:,.0f} / ₹ {upper_2sigma:,.0f}).</em>
+            </div>
+            """, unsafe_allow_html=True)
             
+        elif selected_strategy_view == "Iron Butterfly":
+            c_sell_ce, p_sell_pe = get_prices(atm_strike)
+            c_buy_ce, _ = get_prices(ic_buy_call)
+            _, p_buy_pe = get_prices(ic_buy_put)
+            
+            max_profit = (c_sell_ce + p_sell_pe) - (c_buy_ce + p_buy_pe)
+            max_profit = max(max_profit, 0.0)
+            
+            st.markdown(f"""
+            <div class="playbook-card">
+                <div class="playbook-title">🦋 Strategy Configuration Profile: Iron Butterfly (Volatility Crush Setup)</div>
+                <strong>Execution Leg Array Setup:</strong><br>
+                • Buy Out-Of-The-Money Protective Put: 1x <b>{ic_buy_put} PE</b> (LTP: ₹{p_buy_pe:.2f})<br>
+                • Sell At-The-Money Income Put: 1x <b>{atm_strike} PE</b> (LTP: ₹{p_sell_pe:.2f})<br>
+                • Sell At-The-Money Income Call: 1x <b>{atm_strike} CE</b> (LTP: ₹{c_sell_ce:.2f})<br>
+                • Buy Out-Of-The-Money Protective Call: 1x <b>{ic_buy_call} CE</b> (LTP: ₹{c_buy_ce:.2f})<br><br>
+                <span style='color: #16a34a; font-size: 16px; font-weight: bold;'>💰 Estimated Net Premium Max Profit: ₹ {max_profit:,.2f} per unit slot</span>
+            </div>
+            """, unsafe_allow_html=True)
+
+        # Display Core Options Execution Table Matrix Grid Array
+        st.subheader("📊 Interactive Options Chain Model & Analytical Greeks")
+        
+        def color_strikes(row):
+            val = row["Strike"]
+            styles = [""] * len(row)
+            if val < spot_price:
+                styles = ["background-color: #f0fdf4;"] * len(row)
+            if val > spot_price:
+                styles = ["background-color: #fef2f2;"] * len(row)
+            return styles
+            
+        styled_df = df_chain.style.apply(color_strikes, axis=1).format({
+            "CE OI": "{:,.0f}", "CE Delta": "{:.2f}", "CE Theta": "{:.2f}", "CE LTP": "₹{:.2f}",
+            "Strike": "{:,.0f}",
+            "PE LTP": "₹{:.2f}", "PE Theta": "{:.2f}", "PE Delta": "{:.2f}", "PE OI": "{:,.0f}"
+        })
+        st.dataframe(styled_df, use_container_width=True, height=400)
+        
+        # Matplotlib visualization arrays for dashboard charting layout execution
+        st.subheader("📈 Open Interest Distribution Profile")
+        fig, ax = plt.subplots(figsize=(12, 4))
+        width = diff * 0.35
+        ax.bar(df_chain["Strike"] - width/2, df_chain["CE OI"], width, label="Call Options OI", color="#ef4444", alpha=0.85)
+        ax.bar(df_
