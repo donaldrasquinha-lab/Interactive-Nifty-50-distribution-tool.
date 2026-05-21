@@ -59,47 +59,142 @@ footer { visibility: hidden; }
 # ── Title Bar Fixed on Top ──
 st.title("⚡ Upstox Live Multi-Index OI & Statistical Dashboard")
 
-# ── Index Definitions (FIXED: Updated keys to match exact Upstox Instrument Master strings) ──
+# ── Index Definitions ──
 INDICES = {
-    "NIFTY 50": {"key": "NSE_INDEX|Nifty 50", "lot_size": 50, "diff": 50, "default_spot": 23800},
-    "BANK NIFTY": {"key": "NSE_INDEX|Nifty Bank", "lot_size": 15, "diff": 100, "default_spot": 51200},
-    "FINNIFTY": {"key": "NSE_INDEX|Nifty Fin Service", "lot_size": 40, "diff": 50, "default_spot": 22400},
-    "MIDCAP NIFTY": {"key": "NSE_INDEX|NIFTY MID SELECT", "lot_size": 75, "diff": 25, "default_spot": 12100},
+    "NIFTY 50": {"key": "NSE_INDEX|Nifty 50", "symbol": "NIFTY", "diff": 50},
+    "BANK NIFTY": {"key": "NSE_INDEX|Nifty Bank", "symbol": "BANKNIFTY", "diff": 100},
+    "FINNIFTY": {"key": "NSE_INDEX|Nifty Fin Service", "symbol": "FINNIFTY", "diff": 50},
+    "MIDCAP NIFTY": {"key": "NSE_INDEX|NIFTY MID SELECT", "symbol": "MIDCPNIFTY", "diff": 25},
 }
 
 # ── Upstox API Helper ──
 class UpstoxClient:
-    BASE = "https://upstox.com"
+    BASE = "https://api.upstox.com/v2"
 
     def __init__(self, token: str):
         self.headers = {
             "Authorization": f"Bearer {token}",
             "Accept": "application/json",
-            "Api-Version": "2.0"
         }
 
     def get_spot_price(self, instrument_key: str):
-        url = f"{self.BASE}/market-quote/ltp"
+        url = f"{self.BASE}/market-quote/quotes"
         r = requests.get(url, headers=self.headers, params={"instrument_key": instrument_key}, timeout=10)
-        return r
+        r.raise_for_status()
+        data = r.json()
+        quote_key = list(data.get("data", {}).keys())[0]
+        return data["data"][quote_key]["last_price"]
 
     def get_expiries(self, instrument_key: str):
-        """Generates target expiry array by naturally projecting next close calendar Thursdays."""
-        today = datetime.now()
-        expiries = []
-        for i in range(4): 
-            days_until_thursday = (3 - today.weekday() + (i * 7)) % (7 + (i * 7))
-            if days_until_thursday == 0 and today.hour >= 16:
-                days_until_thursday += 7
-            target_date = today + timedelta(days=days_until_thursday)
-            expiries.append(target_date.strftime("%Y-%m-%d"))
-        return expiries
+        url = f"{self.BASE}/option/contract"
+        r = requests.get(url, headers=self.headers, params={"instrument_key": instrument_key}, timeout=10)
+        r.raise_for_status()
+        data = r.json()
+        expiries = sorted(set(
+            c.get("expiry", "")[:10] if isinstance(c.get("expiry"), str) else str(c.get("expiry", ""))[:10]
+            for c in data.get("data", [])
+        ))
+        return [e for e in expiries if e and e != "None"]
 
     def get_option_chain(self, instrument_key: str, expiry_date: str):
         url = f"{self.BASE}/option/chain"
         params = {"instrument_key": instrument_key, "expiry_date": expiry_date}
         r = requests.get(url, headers=self.headers, params=params, timeout=10)
-        return r
+        r.raise_for_status()
+        return r.json().get("data", [])
+
+    def get_historical_candles(self, instrument_key: str, interval: str = "day", days: int = 30):
+        """Fetch intraday or daily OHLC candles for ADX computation."""
+        from datetime import timedelta
+        to_date = datetime.now().strftime("%Y-%m-%d")
+        from_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+        url = f"{self.BASE}/historical-candle/{instrument_key}/{interval}/{to_date}/{from_date}"
+        r = requests.get(url, headers=self.headers, timeout=10)
+        r.raise_for_status()
+        data = r.json()
+        candles = data.get("data", {}).get("candles", [])
+        # candles: [[timestamp, open, high, low, close, volume, oi], ...]
+        if not candles:
+            return pd.DataFrame()
+        rows = []
+        for c in candles:
+            rows.append({
+                "timestamp": c[0], "open": c[1], "high": c[2],
+                "low": c[3], "close": c[4], "volume": c[5],
+            })
+        cdf = pd.DataFrame(rows).sort_values("timestamp").reset_index(drop=True)
+        return cdf
+
+
+def compute_adx(candles_df: pd.DataFrame, period: int = 14):
+    """
+    Compute ADX, +DI, -DI from OHLC candle data.
+    Uses Wilder's smoothing method.
+    Returns dict with adx, plus_di, minus_di (latest values).
+    """
+    if candles_df.empty or len(candles_df) < period + 2:
+        return None
+
+    df = candles_df.copy()
+    df["prev_high"] = df["high"].shift(1)
+    df["prev_low"] = df["low"].shift(1)
+    df["prev_close"] = df["close"].shift(1)
+
+    # True Range
+    df["tr"] = df.apply(lambda r: max(
+        r["high"] - r["low"],
+        abs(r["high"] - r["prev_close"]) if pd.notna(r["prev_close"]) else 0,
+        abs(r["low"] - r["prev_close"]) if pd.notna(r["prev_close"]) else 0,
+    ), axis=1)
+
+    # Directional Movement
+    df["+dm"] = df.apply(lambda r: max(r["high"] - r["prev_high"], 0)
+                         if pd.notna(r["prev_high"]) and (r["high"] - r["prev_high"]) > (r["prev_low"] - r["low"])
+                         else 0, axis=1)
+    df["-dm"] = df.apply(lambda r: max(r["prev_low"] - r["low"], 0)
+                         if pd.notna(r["prev_low"]) and (r["prev_low"] - r["low"]) > (r["high"] - r["prev_high"])
+                         else 0, axis=1)
+
+    df = df.iloc[1:].reset_index(drop=True)  # drop first row (NaN prev)
+
+    # Wilder's smoothing
+    tr_smooth = [df["tr"].iloc[:period].sum()]
+    pdm_smooth = [df["+dm"].iloc[:period].sum()]
+    ndm_smooth = [df["-dm"].iloc[:period].sum()]
+
+    for i in range(period, len(df)):
+        tr_smooth.append(tr_smooth[-1] - (tr_smooth[-1] / period) + df["tr"].iloc[i])
+        pdm_smooth.append(pdm_smooth[-1] - (pdm_smooth[-1] / period) + df["+dm"].iloc[i])
+        ndm_smooth.append(ndm_smooth[-1] - (ndm_smooth[-1] / period) + df["-dm"].iloc[i])
+
+    # +DI / -DI series
+    plus_di_list = []
+    minus_di_list = []
+    dx_list = []
+
+    for i in range(len(tr_smooth)):
+        tr_val = tr_smooth[i]
+        pdi = (pdm_smooth[i] / tr_val * 100) if tr_val > 0 else 0
+        ndi = (ndm_smooth[i] / tr_val * 100) if tr_val > 0 else 0
+        plus_di_list.append(pdi)
+        minus_di_list.append(ndi)
+        denom = pdi + ndi
+        dx_list.append(abs(pdi - ndi) / denom * 100 if denom > 0 else 0)
+
+    if len(dx_list) < period:
+        return None
+
+    # ADX = Wilder's smooth of DX
+    adx_list = [sum(dx_list[:period]) / period]
+    for i in range(period, len(dx_list)):
+        adx_list.append((adx_list[-1] * (period - 1) + dx_list[i]) / period)
+
+    return {
+        "adx": round(adx_list[-1], 2),
+        "plus_di": round(plus_di_list[-1], 2),
+        "minus_di": round(minus_di_list[-1], 2),
+    }
+
 
 # ── Sidebar Setup ──
 st.sidebar.markdown('<div class="sidebar-header">UPSTOX Engine</div>', unsafe_allow_html=True)
