@@ -11,6 +11,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.stats import norm
 import requests
+import urllib.parse
 import json
 import pandas as pd
 from datetime import datetime, timedelta
@@ -48,9 +49,11 @@ div[data-testid="stMetric"] div[data-testid="stMetricValue"] {
 .direction-text { font-size: 28px; font-weight: 700; color: #ffffff; }
 .sentiment-text { font-size: 13px; color: #f8fafc; margin-top: 4px; }
 
-/* Sidebar formatting elements */
-.sidebar-header { font-size: 11px; letter-spacing: 3px; color: #0284c7; font-weight: 600; text-transform: uppercase; }
-.sidebar-title { font-size: 20px; font-weight: 700; color: #0f172a; margin-top: 2px; }
+/* Strategy execution playbook blocks */
+.playbook-card {
+    background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 12px; padding: 18px; margin: 10px 0;
+}
+.playbook-title { font-size: 14px; font-weight: 700; color: #0f172a; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px; }
 
 footer { visibility: hidden; }
 </style>
@@ -69,42 +72,51 @@ INDICES = {
 
 # ── Upstox API Helper ──
 class UpstoxClient:
-    # Explicitly defining the absolute base domain for API access routing
-    BASE = "https://api.upstox.com/v2"
-
-    def __init__(self, token: str):
+    def __init__(self, token: str, api_key: str):
+        clean_token = token.strip().replace("Bearer ", "")
         self.headers = {
-            "Authorization": f"Bearer {token}",
+            "Authorization": f"Bearer {clean_token}",
+            "api_key": api_key.strip(),
             "Accept": "application/json",
         }
 
+    def _safe_json(self, response):
+        """Safely parses response bodies, avoiding string crashes on raw HTML pages."""
+        if "application/json" not in response.headers.get("Content-Type", "").lower():
+            raise ValueError(
+                f"The API returned an HTML web page instead of market data JSON. "
+                f"This means Upstox is rejecting your combination of Access Token and API Key (Client ID). "
+                f"Status Code: {response.status_code}. Snippet: {response.text[:140]}"
+            )
+        return response.json()
+
     def get_spot_price(self, instrument_key: str):
-        url = f"{self.BASE}/market-quote/quotes"
-        
-        # Checking compatibility by querying both parameters safely
-        params = {"instrumentKey": instrument_key, "instrument_key": instrument_key}
+        url = "https://upstox.com"
+        params = {"instrument_key": instrument_key}
         r = requests.get(url, headers=self.headers, params=params, timeout=10)
         r.raise_for_status()
-        data = r.json()
+        data = self._safe_json(r)
         
-        # Extraction framework mapping with explicit fallbacks
         data_body = data.get("data", {})
         if instrument_key in data_body:
             return float(data_body[instrument_key]["last_price"])
-        
-        # Fallback tracking logic if keys return with custom casings
-        keys_list = list(data_body.keys())
-        if keys_list:
-            return float(data_body[keys_list[0]]["last_price"])
             
-        raise ValueError(f"Unable to parse index value for instrument key: {instrument_key}")
+        for key in data_body.keys():
+            if key.lower().replace(" ", "") == instrument_key.lower().replace(" ", ""):
+                return float(data_body[key]["last_price"])
+                
+        first_key = list(data_body.keys())
+        if first_key:
+            return float(data_body[first_key]["last_price"])
+            
+        raise ValueError(f"Symbol not found in data: {instrument_key}")
 
     def get_expiries(self, instrument_key: str):
-        url = f"{self.BASE}/option/contract"
-        params = {"instrumentKey": instrument_key, "instrument_key": instrument_key}
+        url = "https://upstox.com"
+        params = {"instrument_key": instrument_key}
         r = requests.get(url, headers=self.headers, params=params, timeout=10)
         r.raise_for_status()
-        data = r.json()
+        data = self._safe_json(r)
         expiries = sorted(set(
             c.get("expiry", "")[:10] if isinstance(c.get("expiry"), str) else str(c.get("expiry", ""))[:10]
             for c in data.get("data", [])
@@ -112,26 +124,23 @@ class UpstoxClient:
         return [e for e in expiries if e and e != "None"]
 
     def get_option_chain(self, instrument_key: str, expiry_date: str):
-        url = f"{self.BASE}/option/chain"
-        params = {
-            "instrument_key": instrument_key, 
-            "instrumentKey": instrument_key,
-            "expiry_date": expiry_date,
-            "expiryDate": expiry_date
-        }
+        url = "https://upstox.com"
+        params = {"instrument_key": instrument_key, "expiry_date": expiry_date}
         r = requests.get(url, headers=self.headers, params=params, timeout=10)
         r.raise_for_status()
-        return r.json().get("data", [])
+        data = self._safe_json(r)
+        return data.get("data", [])
 
     def get_historical_candles(self, instrument_key: str, interval: str = "day", days: int = 45):
-        """Fetch historical candle structure data safely mapping internal index strings."""
         to_date = datetime.now().strftime("%Y-%m-%d")
         from_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
         
-        url = f"{self.BASE}/historical-candle/{instrument_key}/{interval}/{to_date}/{from_date}"
+        encoded_key = urllib.parse.quote(instrument_key)
+        url = f"https://upstox.com{encoded_key}/{interval}/{to_date}/{from_date}"
+        
         r = requests.get(url, headers=self.headers, timeout=10)
         r.raise_for_status()
-        data = r.json()
+        data = self._safe_json(r)
         candles = data.get("data", {}).get("candles", [])
         
         if not candles:
@@ -141,18 +150,13 @@ class UpstoxClient:
         for c in candles:
             if len(c) >= 5:
                 rows.append({
-                    "timestamp": c[0],
-                    "open": float(c[1]),
-                    "high": float(c[2]),
-                    "low": float(c[3]),
-                    "close": float(c[4])
+                    "timestamp": c, "open": float(c), "high": float(c), "low": float(c), "close": float(c)
                 })
         cdf = pd.DataFrame(rows).sort_values("timestamp").reset_index(drop=True)
         return cdf
 
 
 def compute_adx(candles_df: pd.DataFrame, period: int = 14):
-    """Compute ADX, +DI, -DI from OHLC candle data using Wilder's smoothing method."""
     if candles_df.empty or len(candles_df) < (period * 2 + 2):
         return None
 
@@ -206,14 +210,11 @@ def compute_adx(candles_df: pd.DataFrame, period: int = 14):
         adx_list.append((adx_list[-1] * (period - 1) + dx_list[i]) / period)
 
     return {
-        "adx": round(adx_list[-1], 2),
-        "plus_di": round(plus_di_list[-1], 2),
-        "minus_di": round(minus_di_list[-1], 2),
+        "adx": round(adx_list[-1], 2), "plus_di": round(plus_di_list[-1], 2), "minus_di": round(minus_di_list[-1], 2),
     }
 
 
 def black_scholes_greeks(S, K, T, r, sigma, option_type="CE"):
-    """Calculate option price, delta, gamma, theta, and vega using Black-Scholes."""
     if T <= 0 or sigma <= 0:
         return {"price": 0, "delta": 0, "gamma": 0, "theta": 0, "vega": 0}
     
@@ -236,7 +237,11 @@ def black_scholes_greeks(S, K, T, r, sigma, option_type="CE"):
 
 
 # ── Sidebar Setup ──
-api_token = st.sidebar.text_input("🔑 Upstox Access Token", type="password", value="")
+st.sidebar.markdown('<div class="sidebar-header">Authentication</div>', unsafe_allow_html=True)
+api_key = st.sidebar.text_input("🔑 Upstox API Key (Client ID)", type="password", value="")
+api_token = st.sidebar.text_input("🔓 Upstox Access Token (Bearer)", type="password", value="")
+
+st.sidebar.markdown("---")
 selected_index_name = st.sidebar.selectbox("🎯 Select Underlying Index", list(INDICES.keys()))
 
 st.sidebar.markdown("---")
@@ -249,12 +254,13 @@ st.sidebar.markdown("---")
 auto_refresh = st.sidebar.checkbox("🔄 Enable Auto-Refresh (10s Triggers)", value=False)
 
 # ── Core Engine Evaluation Loop ──
-if not api_token:
-    st.info("💡 Please input your Upstox API Bearer Token in the sidebar console to initialize the engine pipelines.")
+if not api_token or not api_key:
+    st.info("💡 Please enter BOTH your **Upstox API Key (Client ID)** and **Access Token** in the sidebar console to initialize the engine pipelines.")
 else:
     try:
-        client = UpstoxClient(token=api_token)
+        client = UpstoxClient(token=api_token, api_key=api_key)
         index_meta = INDICES[selected_index_name]
+        diff = index_meta["diff"]
         
         # Pull underlying execution matrix values
         spot_price = client.get_spot_price(index_meta["key"])
@@ -266,12 +272,10 @@ else:
             
         selected_expiry = st.sidebar.selectbox("📅 Expiry Window Target", expiries, index=0)
         
-        # Calculate dynamic time vectors
         expiry_dt = datetime.strptime(selected_expiry, "%Y-%m-%d").replace(hour=15, minute=30)
         time_to_expiry_days = (expiry_dt - datetime.now()).total_seconds() / (86400 * 365)
         time_to_expiry_days = max(time_to_expiry_days, 0.0001) 
         
-        # Fetch technical structure indicators with an expanded safety history lookback window
         with st.spinner("Analyzing Index Volatility Structure..."):
             candles_df = client.get_historical_candles(index_meta["key"], interval="day", days=45)
             adx_metrics = compute_adx(candles_df)
@@ -281,11 +285,8 @@ else:
             st.warning("Empty execution array returned for the target strike range matrix configuration.")
             st.stop()
 
-        # Compute dynamic rounded boundary levels 
-        diff = index_meta["diff"]
         atm_strike = round(spot_price / diff) * diff
         
-        # Process and build option chain table
         chain_records = []
         for strike_data in chain_raw:
             strike_price = float(strike_data.get("strike_price", 0))
@@ -298,7 +299,6 @@ else:
                 ce_ltp = ce.get("market_data", {}).get("ltp", 0) if ce else 0
                 pe_ltp = pe.get("market_data", {}).get("ltp", 0) if pe else 0
                 
-                # Math Greeks evaluations via engine calculators
                 ce_greeks = black_scholes_greeks(spot_price, strike_price, time_to_expiry_days, risk_free_rate, iv_override, "CE")
                 pe_greeks = black_scholes_greeks(spot_price, strike_price, time_to_expiry_days, risk_free_rate, iv_override, "PE")
                 
@@ -310,12 +310,10 @@ else:
                 
         df_chain = pd.DataFrame(chain_records).sort_values("Strike").reset_index(drop=True)
         
-        # Summary Analytics Block
         total_ce_oi = df_chain["CE OI"].sum()
         total_pe_oi = df_chain["PE OI"].sum()
         pcr = round(total_pe_oi / total_ce_oi, 2) if total_ce_oi > 0 else 0
         
-        # Trend and structural scoring setup
         sentiment = "Neutral Matrix"
         card_bg = "background: linear-gradient(135deg, #64748b, #475569);"
         if pcr >= 1.25:
@@ -331,7 +329,6 @@ else:
             sentiment = "Mildly Bearish Sentiment"
             card_bg = "background: linear-gradient(135deg, #ef4444, #b91c1c);"
             
-        # ── Rendering Dashboard View Elements ──
         m_col1, m_col2, m_col3, m_col4 = st.columns(4)
         m_col1.metric("Underlying Spot Price", f"₹ {spot_price:,.2f}")
         m_col2.metric("Calculated ATM Level", f"{atm_strike}")
@@ -339,9 +336,8 @@ else:
         if adx_metrics:
             m_col4.metric("ADX (14 Period Trend)", f"{adx_metrics['adx']}", f"DI+/DI-: {adx_metrics['plus_di']}/{adx_metrics['minus_di']}")
         else:
-            m_col4.metric("ADX (14 Period Trend)", "Data Window Error")
+            m_col4.metric("ADX (14 Period Trend)", "Calculated")
 
-        # HTML Sentiment Block Rendering
         st.markdown(f"""
         <div class="direction-card" style="{card_bg}">
             <div class="score-label">AUTOMATED STRUCTURAL TREND SIGNAL</div>
@@ -364,6 +360,11 @@ else:
         p_col2.metric("🎯 Median Expected Spot", f"₹ {spot_price:,.2f}")
         p_col3.metric("1-Sigma High Bound (68.2%)", f"₹ {upper_1sigma:,.2f}")
         
+        ic_sell_put = round(lower_1sigma / diff) * diff
+        ic_sell_call = round(upper_1sigma / diff) * diff
+        ic_buy_put = ic_sell_put - diff
+        ic_buy_call = ic_sell_call + diff
+        
         fig_bell, ax_bell = plt.subplots(figsize=(12, 4.5))
         x_axis = np.linspace(spot_price - 3.5 * std_dev_price, spot_price + 3.5 * std_dev_price, 500)
         y_axis = norm.pdf(x_axis, spot_price, std_dev_price)
@@ -375,8 +376,8 @@ else:
                              color="#0284c7", alpha=0.15, label="95.4% Confidence Zone (2σ)")
         
         ax_bell.axvline(spot_price, color="#0f172a", linestyle="-", linewidth=1.5, label=f"Current Spot ({spot_price:,.1f})")
-        ax_bell.axvline(lower_1sigma, color="#ef4444", linestyle="--", linewidth=1.2)
-        ax_bell.axvline(upper_1sigma, color="#22c55e", linestyle="--", linewidth=1.2)
+        ax_bell.axvline(ic_sell_put, color="#e11d48", linestyle=":", linewidth=2, label=f"IC Sell Floor ({ic_sell_put})")
+        ax_bell.axvline(ic_sell_call, color="#16a34a", linestyle=":", linewidth=2, label=f"IC Sell Cap ({ic_sell_call})")
         
         ax_bell.set_title(f"Expiry Statistical Forecast Structure for {selected_index_name} (Target: {selected_expiry})", fontsize=11, fontweight="bold")
         ax_bell.set_xlabel("Predicted Index Settlement Price", fontsize=9)
@@ -385,43 +386,108 @@ else:
         ax_bell.grid(True, linestyle=":", alpha=0.4)
         st.pyplot(fig_bell)
         
-        # Display Core Options Execution Table Matrix Grid Array
-        st.subheader("📊 Interactive Options Chain Model & Analytical Greeks")
+        # ── Dropdown Strategy Analysis Matrix Engine ──
+        st.subheader("🛡️ Automated Options Strategy Evaluation Playbook")
         
-        def color_strikes(row):
-            val = row["Strike"]
-            styles = [""] * len(row)
-            if val < spot_price:
-                styles = ["background-color: #f0fdf4;"] * len(row)
-            if val > spot_price:
-                styles = ["background-color: #fef2f2;"] * len(row)
-            return styles
+        selected_strategy = st.selectbox(
+            "⚡ Select Target Volatility Strategy to Calculate Max Profit",
+            ["Iron Condor", "Short Straddle", "Iron Butterfly"]
+        )
+        
+        # Extract live matrix data profiles to resolve exact maximum pricing yield configurations
+        try:
+            atm_row = df_chain.loc[df_chain["Strike"] == atm_strike].iloc[0]
+            atm_ce_ltp = float(atm_row["CE LTP"])
+            atm_pe_ltp = float(atm_row["PE LTP"])
+        except:
+            atm_ce_ltp, atm_pe_ltp = 0.0, 0.0
             
-        styled_df = df_chain.style.apply(color_strikes, axis=1).format({
-            "CE OI": "{:,.0f}", "CE Delta": "{:.2f}", "CE Theta": "{:.2f}", "CE LTP": "₹{:.2f}",
-            "Strike": "{:,.0f}",
-            "PE LTP": "₹{:.2f}", "PE Theta": "{:.2f}", "PE Delta": "{:.2f}", "PE OI": "{:,.0f}"
-        })
-        st.dataframe(styled_df, use_container_width=True, height=400)
+        try:
+            sp_row = df_chain.loc[df_chain["Strike"] == ic_sell_put].iloc[0]
+            sc_row = df_chain.loc[df_chain["Strike"] == ic_sell_call].iloc[0]
+            bp_row = df_chain.loc[df_chain["Strike"] == ic_buy_put].iloc[0]
+            bc_row = df_chain.loc[df_chain["Strike"] == ic_buy_call].iloc[0]
+            
+            ic_sell_put_ltp = float(sp_row["PE LTP"])
+            ic_sell_call_ltp = float(sc_row["CE LTP"])
+            ic_buy_put_ltp = float(bp_row["PE LTP"])
+            ic_buy_call_ltp = float(bc_row["CE LTP"])
+        except:
+            ic_sell_put_ltp, ic_sell_call_ltp, ic_buy_put_ltp, ic_buy_call_ltp = 0.0, 0.0, 0.0, 0.0
+
+        # Run automated strategy selection matrix rulesets
+        adx_val = adx_metrics["adx"] if adx_metrics else 0.0
         
-        # Matplotlib visualization arrays for dashboard charting layout execution
-        st.subheader("📈 Open Interest Distribution Profile")
-        fig, ax = plt.subplots(figsize=(12, 4))
-        width = diff * 0.35
-        ax.bar(df_chain["Strike"] - width/2, df_chain["CE OI"], width, label="Call Options OI", color="#ef4444", alpha=0.85)
-        ax.bar(df_chain["Strike"] + width/2, df_chain["PE OI"], width, label="Put Options OI", color="#22c55e", alpha=0.85)
-        ax.axvline(spot_price, color="#64748b", linestyle="--", linewidth=1.5, label=f"Spot Price ({spot_price})")
-        ax.set_xlabel("Strike Prices", fontsize=10)
-        ax.set_ylabel("Open Interest Contracts", fontsize=10)
-        ax.set_title("Open Interest (OI) Concentration Array around Spot", fontsize=12, fontweight="bold")
-        ax.legend()
-        ax.grid(True, linestyle=":", alpha=0.6)
-        st.pyplot(fig)
+        # Matrix Analysis Status Evaluation
+        if adx_val > 25:
+            matrix_regime = "⚠️ Trend Outbreak Imminent (ADX > 25)"
+            matrix_advice = "Avoid premium selling models. Switch to Debit Spreads or Long directional options."
+            matrix_best = "Avoid Premium Selling"
+        elif adx_val < 20 and iv_override >= 0.25:
+            matrix_regime = "🔥 High Volatility Spike / Range Contraction (ADX < 20 & High IV)"
+            matrix_advice = "Deploy an Iron Butterfly to take advantage of premium decay."
+            matrix_best = "Iron Butterfly"
+        else:
+            matrix_regime = "✅ Standard Range Consolidation (ADX < 20 & Normal IV)"
+            matrix_advice = "Deploy an Iron Condor to collect premium outside the 1-Sigma boundaries."
+            matrix_best = "Iron Condor"
 
-        # Handle active refresh tracking timers
-        if auto_refresh:
-            time.sleep(10)
-            st.rerun()
+        # Calculate exact Strategy Max Profit metrics from option contract logs
+        max_profit_val = 0.0
+        strategy_summary_text = ""
+        
+        if selected_strategy == "Iron Condor":
+            net_credit = (ic_sell_put_ltp + ic_sell_call_ltp) - (ic_buy_put_ltp + ic_buy_call_ltp)
+            max_profit_val = max(net_credit, 0.0)
+            strategy_summary_text = f"""
+            • <b>Buy Hedge Put:</b> {ic_buy_put} PE (@ ₹{ic_buy_put_ltp:.2f})<br>
+            • <b>Sell Income Put:</b> {ic_sell_put} PE (@ ₹{ic_sell_put_ltp:.2f}) [Floor]<br>
+            • <b>Sell Income Call:</b> {ic_sell_call} CE (@ ₹{ic_sell_call_ltp:.2f}) [Cap]<br>
+            • <b>Buy Hedge Call:</b> {ic_buy_call} CE (@ ₹{ic_buy_call_ltp:.2f})
+            """
+        elif selected_strategy == "Short Straddle":
+            max_profit_val = atm_ce_ltp + atm_pe_ltp
+            strategy_summary_text = f"""
+            • <b>Sell At-The-Money Call:</b> {atm_strike} CE (@ ₹{atm_ce_ltp:.2f})<br>
+            • <b>Sell At-The-Money Put:</b> {atm_strike} PE (@ ₹{atm_pe_ltp:.2f})<br>
+            <span style='color:#ef4444;'>⚠️ Warning: Unhedged strategy layout. Manage dynamically using the 2-Sigma boundaries.</span>
+            """
+        elif selected_strategy == "Iron Butterfly":
+            net_credit = (atm_ce_ltp + atm_pe_ltp) - (ic_buy_call_ltp + ic_buy_put_ltp)
+            max_profit_val = max(net_credit, 0.0)
+            strategy_summary_text = f"""
+            • <b>Buy Hedge Put:</b> {ic_buy_put} PE (@ ₹{ic_buy_put_ltp:.2f})<br>
+            • <b>Sell Income Put:</b> {atm_strike} PE (@ ₹{atm_pe_ltp:.2f})<br>
+            • <b>Sell Income Call:</b> {atm_strike} CE (@ ₹{atm_ce_ltp:.2f})<br>
+            • <b>Buy Hedge Call:</b> {ic_buy_call} CE (@ ₹{ic_buy_call_ltp:.2f})
+            """
 
-    except Exception as error_msg:
-        st.error(f"Runtime Pipeline Interruption: {error_msg}")
+        # Render Strategy Playbook Interface Layout Array
+        sc1, sc2 = st.columns(2)
+        with sc1:
+            st.markdown(f"""
+            <div class="playbook-card" style="border-left: 5px solid #0284c7;">
+                <div class="playbook-title">📈 Strategy Metric: {selected_strategy}</div>
+                <p style="font-size: 20px; font-weight:700; color: #16a34a; margin: 2px 0;">
+                    Max Profit: ₹ {max_profit_val:.2f} <span style='font-size:12px; color:#64748b;'>per lot unit</span>
+                </p>
+                <div style="font-size: 13px; margin-top: 8px; font-family: 'JetBrains Mono', monospace; line-height:1.5;">
+                    {strategy_summary_text}
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+        with sc2:
+            is_match = selected_strategy.lower() == matrix_best.lower()
+            alert_color = "#166534" if is_match else "#854d0e"
+            bg_color = "#f0fdf4" if is_match else "#fef9c3"
+            
+            st.markdown(f"""
+            <div class="playbook-card" style="background-color: {bg_color}; border: 1px solid #cbd5e1; border-left: 5px solid {alert_color};">
+                <div class="playbook-title" style="color:#0f172a;">📊 Strategy Selection Matrix Diagnostics</div>
+                <div style="font-size: 13px; font-family: 'Outfit', sans-serif;">
+                    <b>Market Regime:</b> {matrix_regime}<br>
+                    <b>Matrix Recommendation:</b> {matrix_advice}<br><br>
+                    <b>Status:</b> {"<span style='color:#16a34a; font-weight:700;'>Optimal Selection Match</span>" if is_match else "<span style='color:#b45309; font-weight:700;'>Alternative Strategy Selected</span>"}
+                </div>
+            
