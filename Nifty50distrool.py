@@ -15,7 +15,7 @@ import json
 import pandas as pd
 from datetime import datetime, timedelta
 
-# ── 1. Page Configuration & Clean Light-Theme Layout ──
+# ── 1. Page Configuration & Scaffold Setup ──
 st.set_page_config(
     page_title="Upstox Alpha Signal Engine",
     page_icon="⚡",
@@ -23,10 +23,13 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# Professional Light Theme CSS Injector
 st.markdown("""
 <style>
 @import url('https://googleapis.com');
 h1, h2, h3, h4 { font-family: 'Outfit', sans-serif !important; }
+
+/* Dynamic KPI metric panel layout formatting */
 div[data-testid="stMetric"] {
     background: #ffffff; border: 1px solid #e2e8f0; border-radius: 12px;
     padding: 14px 18px; box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.05);
@@ -35,19 +38,28 @@ div[data-testid="stMetric"] label { color: #64748b !important; font-size: 11px !
 div[data-testid="stMetric"] div[data-testid="stMetricValue"] {
     font-family: 'JetBrains Mono', monospace !important; font-weight: 700 !important; color: #0f172a !important; font-size: 22px !important;
 }
+
+/* Direction sentiment summary blocks */
 .direction-card {
     border-radius: 14px; padding: 22px; margin: 15px 0; font-family: 'JetBrains Mono', monospace; border: 1px solid #e2e8f0;
 }
 .score-label { font-size: 11px; letter-spacing: 2px; color: #ffffff; opacity: 0.9; margin-bottom: 4px; }
 .direction-text { font-size: 28px; font-weight: 700; color: #ffffff; }
 .sentiment-text { font-size: 13px; color: #f8fafc; margin-top: 4px; }
+
+/* Sidebar formatting elements */
 .sidebar-header { font-size: 11px; letter-spacing: 3px; color: #0284c7; font-weight: 600; text-transform: uppercase; }
 .sidebar-title { font-size: 20px; font-weight: 700; color: #0f172a; margin-top: 2px; }
-#MainMenu, footer, header { visibility: hidden; }
+
+/* FIXED: Omitted the full header visibility override to preserve Streamlit's native sidebar call-back toggle button */
+footer { visibility: hidden; }
 </style>
 """, unsafe_allow_html=True)
 
-# ── 2. Sidebar Control & Asset Configurations ──
+# ── Title Bar Placed Fixed on Top ──
+st.title("⚡ Upstox Live Multi-Index OI & Statistical Dashboard")
+
+# ── 2. Sidebar Control Panel & Token Configuration ──
 st.sidebar.markdown('<div class="sidebar-header">Upstox Analytics</div>', unsafe_allow_html=True)
 st.sidebar.markdown('<div class="sidebar-title">Alpha Signal Engine</div>', unsafe_allow_html=True)
 st.sidebar.markdown("---")
@@ -125,7 +137,6 @@ if upstox_token:
                     total_call_oi, total_put_oi = 0, 0
                     total_call_coi, total_put_coi = 0, 0
                     total_call_iv, total_put_iv = 0.0, 0.0
-                    option_rows_count = 0
                     
                     best_call_strike, best_put_strike = atm_strike + oi_step, atm_strike - oi_step
                     premium_lookup = {}
@@ -154,7 +165,6 @@ if upstox_token:
                         if abs(strike - atm_strike) <= (oi_step * 3):
                             total_call_iv += c_iv
                             total_put_iv += p_iv
-                            option_rows_count += 1
                         
                         premium_lookup[strike] = ce_data.get('ltp', atm_premium)
                         
@@ -216,10 +226,19 @@ f3_signal_score = 25 if volatility_skew_index > 1.03 else 12.5
 f4_signal_score = 25 if not is_explosive_trend else 5
 
 alpha_composite_signal = int((f1_signal_score + f2_signal_score + f3_signal_score + f4_signal_score) * trend_guard_multiplier)
-signal_classification = "STRONG BULLISH ENTRY" if alpha_composite_signal >= 70 else ("EXPLOSIVE TREND OVERHEAD: HOLD" if is_explosive_trend else "RANGEBOUND CONSOLIDATION: EXECUTE SPREAD")
-signal_theme_color = "#16a34a" if alpha_composite_signal >= 65 else ("#ea580c" if is_explosive_trend else "#2563eb")
 
-# Render Metric Panels
+# RESTORED: Indicator layout logic handles dynamic BUY / SELL / HOLD based on strategy trends
+if is_explosive_trend:
+    signal_classification = "EXPLOSIVE TREND OVERHEAD: HOLD EXECUTION"
+    signal_theme_color = "#ea580c"  # Amber warning
+elif alpha_composite_signal >= 60:
+    signal_classification = "STRONG BULLISH SPREAD ENTRY: BUY"
+    signal_theme_color = "#16a34a"  # Green buy
+else:
+    signal_classification = "OVERHEAD RESISTANCE LOCKED: SELL SPREAD"
+    signal_theme_color = "#dc2626"  # Red sell
+
+# ── 4. Metric Panels Plotted Directly Under the Title Bar ──
 col_m1, col_m2, col_m3, col_m4, col_m5 = st.columns(5)
 with col_m1:
     st.metric(label=f"🎯 {selected_index} Spot", value=f"₹{spot_price:,.2f}", delta="Live Feed" if is_live else "Simulated Engine")
@@ -232,7 +251,7 @@ with col_m4:
 with col_m5:
     st.metric(label="📅 Active Options Expiry", value=detected_expiry)
 
-# Render Alpha Signals Display Block
+# ── 5. Trend Signal Window Layout Block ──
 st.markdown(f"""
 <div class="direction-card" style="background: {signal_theme_color}; border-color: {signal_theme_color}; color: #ffffff;">
     <div class="score-label">⚡ UPSTOX QUANTALPHA SIGNAL MATRIX Engine</div>
@@ -241,13 +260,12 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-# ── 4. Mathematical Engine Setup (68-95-99.7 Rule) ──
-# FIXED: Declared variable explicitly here before downstream rendering arrays call it
+# ── 6. Mathematical Engine Setup (68-95-99.7 Rule) ──
 one_sd_move = spot_price * iv_percent * time_factor
 sd1_lower, sd1_upper = spot_price - one_sd_move, spot_price + one_sd_move
 sd2_lower, sd2_upper = spot_price - (2 * one_sd_move), spot_price + (2 * one_sd_move)
 
-# ── 5. Advanced Geometry Strategies Visualization ──
+# ── 7. Advanced Geometry Strategies Visualization ──
 strike_buy = atm_strike
 strike_sell = oi_wall_strike
 strike_hedge = strike_sell + (strike_sell - strike_buy)
@@ -303,7 +321,7 @@ with col_right:
     ax_t.grid(True, linestyle=":", alpha=0.3, color="#cbd5e1")
     st.pyplot(fig_t)
 
-# ── 6. Clean Table Data Recommendations ──
+# ── 8. Clean Table Data Recommendations ──
 st.markdown("---")
 st.subheader("📋 Executable Order Matrix & Live Recommendations")
 col_rec1, col_rec2 = st.columns(2)
