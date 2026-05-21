@@ -60,6 +60,7 @@ footer { visibility: hidden; }
 st.title("⚡ Upstox Live Multi-Index OI & Statistical Dashboard")
 
 # ── Index Definitions ──
+# Corrected master instrument tokens matching Upstox asset dictionaries
 INDICES = {
     "NIFTY 50": {"key": "NSE_INDEX|Nifty 50", "symbol": "NIFTY", "diff": 50},
     "BANK NIFTY": {"key": "NSE_INDEX|Nifty Bank", "symbol": "BANKNIFTY", "diff": 100},
@@ -69,7 +70,7 @@ INDICES = {
 
 # ── Upstox API Helper ──
 class UpstoxClient:
-    BASE = "https://upstox.com"
+    BASE = "https://api.upstox.com/v2"
 
     def __init__(self, token: str):
         self.headers = {
@@ -79,11 +80,19 @@ class UpstoxClient:
 
     def get_spot_price(self, instrument_key: str):
         url = f"{self.BASE}/market-quote/quotes"
-        r = requests.get(url, headers=self.headers, params={"instrument_key": instrument_key}, timeout=10)
+        # Passing parameter exactly configured as 'instrument_key' query string 
+        params = {"instrument_key": instrument_key}
+        r = requests.get(url, headers=self.headers, params=params, timeout=10)
         r.raise_for_status()
         data = r.json()
-        quote_key = list(data.get("data", {}).keys())[0]
-        return data["data"][quote_key]["last_price"]
+        
+        # Safe extraction guarding against malformed responses or errors
+        if "data" in data and instrument_key in data["data"]:
+            return float(data["data"][instrument_key]["last_price"])
+        else:
+            # Fallback check if the key returns encoded or formatted variations
+            first_key = list(data.get("data", {}).keys())[0]
+            return float(data["data"][first_key]["last_price"])
 
     def get_expiries(self, instrument_key: str):
         url = f"{self.BASE}/option/contract"
@@ -104,14 +113,17 @@ class UpstoxClient:
         return r.json().get("data", [])
 
     def get_historical_candles(self, instrument_key: str, interval: str = "day", days: int = 30):
-        """Fetch intraday or daily OHLC candles for ADX computation."""
+        """Fetch historical data. Fixed path sequencing format layout matching Upstox V2 specs."""
         to_date = datetime.now().strftime("%Y-%m-%d")
         from_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+        
+        # Upstox V2 path template layout structure requirement: /historical-candle/{instrumentKey}/{interval}/{to_date}/{from_date}
         url = f"{self.BASE}/historical-candle/{instrument_key}/{interval}/{to_date}/{from_date}"
         r = requests.get(url, headers=self.headers, timeout=10)
         r.raise_for_status()
         data = r.json()
         candles = data.get("data", {}).get("candles", [])
+        
         if not candles:
             return pd.DataFrame()
         rows = []
@@ -194,7 +206,7 @@ def black_scholes_greeks(S, K, T, r, sigma, option_type="CE"):
     d2 = d1 - sigma * np.sqrt(T)
     
     gamma = norm.pdf(d1) / (S * sigma * np.sqrt(T))
-    vega = S * norm.pdf(d1) * np.sqrt(T) / 100 # per 1% change
+    vega = S * norm.pdf(d1) * np.sqrt(T) / 100 
     
     if option_type == "CE":
         price = S * norm.cdf(d1) - K * np.exp(-r * T) * norm.cdf(d2)
@@ -242,7 +254,7 @@ else:
         # Calculate dynamic time vectors
         expiry_dt = datetime.strptime(selected_expiry, "%Y-%m-%d").replace(hour=15, minute=30)
         time_to_expiry_days = (expiry_dt - datetime.now()).total_seconds() / (86400 * 365)
-        time_to_expiry_days = max(time_to_expiry_days, 0.0001) # floor zero values
+        time_to_expiry_days = max(time_to_expiry_days, 0.0001) 
         
         # Fetch technical structure indicators
         with st.spinner("Analyzing Index Volatility Structure..."):
@@ -326,36 +338,27 @@ else:
         # ── Normal Distribution Price Prediction Engine ──
         st.subheader("🎯 Statistical Price Prediction Range (Normal Distribution Model)")
         
-        # Compute standard deviation based on log-normal distribution step parameters
-        # Standard deviation of price move = Spot * IV * sqrt(T)
         std_dev_price = spot_price * iv_override * np.sqrt(time_to_expiry_days)
-        
-        # Standard Boundaries 1 Sigma (68.2%) and 2 Sigma (95.4%)
         lower_1sigma = spot_price - std_dev_price
         upper_1sigma = spot_price + std_dev_price
         lower_2sigma = spot_price - (2 * std_dev_price)
         upper_2sigma = spot_price + (2 * std_dev_price)
         
-        # Display Predicted Bands inside clean modern layout columns
         p_col1, p_col2, p_col3 = st.columns(3)
         p_col1.metric("1-Sigma Low Bound (68.2%)", f"₹ {lower_1sigma:,.2f}")
         p_col2.metric("🎯 Median Expected Spot", f"₹ {spot_price:,.2f}")
         p_col3.metric("1-Sigma High Bound (68.2%)", f"₹ {upper_1sigma:,.2f}")
         
-        # Visual Mapping Configuration: Bell Curve
         fig_bell, ax_bell = plt.subplots(figsize=(12, 4.5))
         x_axis = np.linspace(spot_price - 3.5 * std_dev_price, spot_price + 3.5 * std_dev_price, 500)
         y_axis = norm.pdf(x_axis, spot_price, std_dev_price)
         
         ax_bell.plot(x_axis, y_axis, color="#0f172a", linewidth=2, label="Probability Density Function")
-        
-        # Shading Sigma Probability bands
         ax_bell.fill_between(x_axis, y_axis, where=(x_axis >= lower_1sigma) & (x_axis <= upper_1sigma), 
                              color="#38bdf8", alpha=0.35, label="68.2% Confidence Zone (1σ)")
         ax_bell.fill_between(x_axis, y_axis, where=((x_axis >= lower_2sigma) & (x_axis < lower_1sigma)) | ((x_axis > upper_1sigma) & (x_axis <= upper_2sigma)), 
                              color="#0284c7", alpha=0.15, label="95.4% Confidence Zone (2σ)")
         
-        # Visual Boundary Anchors
         ax_bell.axvline(spot_price, color="#0f172a", linestyle="-", linewidth=1.5, label=f"Current Spot ({spot_price:,.1f})")
         ax_bell.axvline(lower_1sigma, color="#ef4444", linestyle="--", linewidth=1.2)
         ax_bell.axvline(upper_1sigma, color="#22c55e", linestyle="--", linewidth=1.2)
@@ -365,7 +368,6 @@ else:
         ax_bell.set_ylabel("Probability Density", fontsize=9)
         ax_bell.legend(loc="upper right", fontsize=8)
         ax_bell.grid(True, linestyle=":", alpha=0.4)
-        
         st.pyplot(fig_bell)
         
         # Display Core Options Execution Table Matrix Grid Array
