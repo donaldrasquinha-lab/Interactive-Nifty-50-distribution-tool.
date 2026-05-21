@@ -288,13 +288,15 @@ def bs_greeks(S, K, T, r, sigma, opt="CE"):
 
 
 def compute_max_pain(df_chain: pd.DataFrame) -> float:
-    strikes = df_chain["Strike"].values
+    strikes = df_chain["Strike"].astype(float).values
+    ce_oi = df_chain["CE OI"].astype(float).values
+    pe_oi = df_chain["PE OI"].astype(float).values
     pain = {}
     for s in strikes:
         total = 0.0
-        for _, row in df_chain.iterrows():
-            total += max(0, s - row["Strike"]) * row["PE OI"]
-            total += max(0, row["Strike"] - s) * row["CE OI"]
+        for k in range(len(strikes)):
+            total += max(0.0, s - strikes[k]) * pe_oi[k]
+            total += max(0.0, strikes[k] - s) * ce_oi[k]
         pain[s] = total
     return min(pain, key=pain.get) if pain else 0.0
 
@@ -447,16 +449,16 @@ try:
         ce_md = ce.get("market_data", {}) or {}
         pe_md = pe.get("market_data", {}) or {}
 
-        ce_oi = ce_md.get("oi", 0)
-        pe_oi = pe_md.get("oi", 0)
-        ce_ltp = ce_md.get("ltp", 0)
-        pe_ltp = pe_md.get("ltp", 0)
-        ce_vol = ce_md.get("volume", 0)
-        pe_vol = pe_md.get("volume", 0)
-        ce_prev_oi = ce_md.get("prev_oi", ce_oi)  # fallback if not available
-        pe_prev_oi = pe_md.get("prev_oi", pe_oi)
-        ce_iv_raw = ce_md.get("iv", 0)
-        pe_iv_raw = pe_md.get("iv", 0)
+        ce_oi = int(float(ce_md.get("oi", 0) or 0))
+        pe_oi = int(float(pe_md.get("oi", 0) or 0))
+        ce_ltp = float(ce_md.get("ltp", 0) or 0)
+        pe_ltp = float(pe_md.get("ltp", 0) or 0)
+        ce_vol = int(float(ce_md.get("volume", 0) or 0))
+        pe_vol = int(float(pe_md.get("volume", 0) or 0))
+        ce_prev_oi = int(float(ce_md.get("prev_oi", ce_oi) or ce_oi))
+        pe_prev_oi = int(float(pe_md.get("prev_oi", pe_oi) or pe_oi))
+        ce_iv_raw = float(ce_md.get("iv", 0) or 0)
+        pe_iv_raw = float(pe_md.get("iv", 0) or 0)
 
         ce_sigma = (ce_iv_raw/100) if ce_iv_raw and ce_iv_raw > 0 else iv_override
         pe_sigma = (pe_iv_raw/100) if pe_iv_raw and pe_iv_raw > 0 else iv_override
@@ -479,6 +481,12 @@ try:
         })
 
     df = pd.DataFrame(records).sort_values("Strike").reset_index(drop=True)
+
+    # Force numeric types on all data columns
+    numeric_cols = [c for c in df.columns if c != "Strike"]
+    for col in numeric_cols:
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+    df["Strike"] = df["Strike"].astype(float)
 
     # ── Derived metrics ──
     total_ce_oi = df["CE OI"].sum()
