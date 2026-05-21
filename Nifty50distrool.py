@@ -42,13 +42,8 @@ days_to_expiry = st.sidebar.number_input("Days to Expiry (For SD Calculation)", 
 st.sidebar.header("🛠️ Risk Controls")
 show_adjustment = st.sidebar.checkbox("Overlay Recommended Adjustment Leg", value=True)
 
-# 3. Live Upstox Data Fetching Architecture (Fallback to Mock System if Empty)
+# 3. Live Upstox Data Fetching Architecture with Dynamic Fallback Options Chain Emulator
 spot_price = index_map[selected_index]["default_spot"]
-atm_strike = int(round(spot_price / oi_step) * oi_step)
-oi_wall_strike = atm_strike + oi_step
-atm_premium = 160
-oi_wall_premium = 70
-hedge_premium = 25
 is_live = False
 
 if upstox_token:
@@ -59,7 +54,7 @@ if upstox_token:
         }
         
         # A. Fetch Spot Price using the dedicated LTP Quotes Endpoint
-        quote_url = 'https://api.upstox.com/v2/market-quote/ltp'
+        quote_url = 'https://upstox.com'
         quote_params = {'instrument_key': instrument_key}
         quote_response = requests.get(quote_url, headers=headers, params=quote_params)
         
@@ -67,14 +62,39 @@ if upstox_token:
             quote_res = quote_response.json()
             if quote_res.get('status') == 'success' and instrument_key in quote_res.get('data', {}):
                 spot_price = quote_res['data'][instrument_key]['last_price']
-                atm_strike = int(round(spot_price / oi_step) * oi_step)
                 is_live = True
         else:
-            st.sidebar.error(f"Quote API Status Error: {quote_response.status_code}. (Likely Invalid or Expired Token)")
+            st.sidebar.error(f"Quote API Status Error: {quote_response.status_code}. Using fallback baseline spot values.")
+            
+    except Exception as e:
+        st.sidebar.error(f"LTP Connection Failed: {str(e)}")
 
-        # B. Fetch Option Chain API Call with HTTP Status Guard Patch
-        chain_url = 'https://api.upstox.com/v2/option/chain'
-        chain_params = {'instrument_key': instrument_key} # Fetches nearest available operational expiry naturally
+# Mathematical Setup Coordinates (Dependent on actual spot price)
+atm_strike = int(round(spot_price / oi_step) * oi_step)
+oi_wall_strike = atm_strike + oi_step
+strike_buy = atm_strike
+strike_sell = oi_wall_strike
+strike_hedge = strike_sell + (strike_sell - strike_buy)
+
+# Base Option Chain Approximation Models (Used if Option Chain API fails or returns HTTP 400)
+# Derived systematically using volatility parameters
+time_factor = np.sqrt(days_to_expiry / 365)
+expected_move = spot_price * iv_percent * time_factor
+
+atm_premium = int(max(25.0, round(expected_move * 0.4)))
+oi_wall_premium = int(max(10.0, round(atm_premium * 0.45)))
+hedge_premium = int(max(2.0, round(oi_wall_premium * 0.35)))
+
+# Try pulling real options premiums if token exists
+if upstox_token:
+    try:
+        headers = {
+            'Accept': 'application/json',
+            'Authorization': f'Bearer {upstox_token}'
+        }
+        # B. Attempt Live Option Chain extraction via Upstox REST Layer
+        chain_url = 'https://upstox.com'
+        chain_params = {'instrument_key': instrument_key} 
         chain_response = requests.get(chain_url, headers=headers, params=chain_params)
         
         if chain_response.status_code == 200:
@@ -89,42 +109,36 @@ if upstox_token:
                     if 'call_options' in item and item['call_options']:
                         m_data = item['call_options']['market_data']
                         current_oi = m_data.get('oi', 0)
-                        premium_lookup[strike] = m_data.get('ltp', 50)
+                        premium_lookup[strike] = m_data.get('ltp', atm_premium)
                         
                         if strike > spot_price and current_oi > max_oi:
                             max_oi = current_oi
                             best_oi_strike = strike
                 
                 oi_wall_strike = best_oi_strike
-                atm_premium = premium_lookup.get(atm_strike, 150)
-                oi_wall_premium = premium_lookup.get(oi_wall_strike, 60)
+                strike_sell = oi_wall_strike
+                strike_hedge = strike_sell + (strike_sell - strike_buy)
                 
-                # Define hedge target boundary strike level
-                hedge_strike_target = oi_wall_strike + (oi_wall_strike - atm_strike)
-                hedge_premium = premium_lookup.get(hedge_strike_target, 20)
+                atm_premium = premium_lookup.get(atm_strike, atm_premium)
+                oi_wall_premium = premium_lookup.get(oi_wall_strike, oi_wall_premium)
+                hedge_premium = premium_lookup.get(strike_hedge, hedge_premium)
         else:
-            st.sidebar.warning(f"Option Chain API Offline ({chain_response.status_code}). Using computed option chain approximations.")
-            
+            st.sidebar.warning(f"Option Chain API returned {chain_response.status_code}. Emulating mathematical premium distributions.")
     except Exception as e:
-        st.sidebar.error(f"API Feed Sync Offline. Reverting to Simulation. Error: {str(e)}")
+        pass
 
-# Display Data Connection Status Ribbon
+# Display Connection Banner
 if is_live:
-    st.success(f"🟢 Connected Live to Upstox API • Syncing Data for {selected_index}")
+    st.success(f"🟢 Connected Live to Upstox API • Syncing Spot Price Data for {selected_index}")
 else:
-    st.warning(f"🟡 Running in Simulation Mode (No Active Token Detected) • Displaying Baseline Parameters for {selected_index}")
+    st.warning(f"🟡 Running in Simulation Mode (No Active Token Data) • Approximating Parameters for {selected_index}")
 
 # 4. Mathematical Engine Setup (68-95-99.7 Rule)
-one_sd_move = spot_price * iv_percent * np.sqrt(days_to_expiry / 365)
+one_sd_move = spot_price * iv_percent * time_factor
 sd1_lower, sd1_upper = spot_price - one_sd_move, spot_price + one_sd_move
 sd2_lower, sd2_upper = spot_price - (2 * one_sd_move), spot_price + (2 * one_sd_move)
 
-# Option Strategy Target Coordinates
-strike_buy = atm_strike
-strike_sell = oi_wall_strike
-strike_hedge = strike_sell + (strike_sell - strike_buy)
-
-# Order Quantities 
+# Order Quantities
 qty_buy = 1
 qty_sell = 2
 qty_hedge = 1
@@ -188,7 +202,7 @@ with col_right:
         ax_t.text(max_prof_x - 140, max_prof_y - 950, f"Max Profit: ₹{int(max_prof_y)}", fontsize=9, weight='bold', color='#0f766e')
 
     ax_t.axhline(0, color='#475569', linestyle='-', linewidth=1.2)
-    ax_t.scatter([lower_be, upper_be], [0, 0], color='#b45309', s=60, zorder=5)
+    ax_t.scatter([lower_be, upper_be],, color='#b45309', s=60, zorder=5)
     ax_t.set_xlim(x.min(), x.max())
     ax_t.grid(True, linestyle=":", alpha=0.5)
     st.pyplot(fig_t)
