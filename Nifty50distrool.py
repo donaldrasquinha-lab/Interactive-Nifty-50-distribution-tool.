@@ -88,10 +88,11 @@ if upstox_token:
         
         if quote_response.status_code == 200 and 'application/json' in quote_response.headers.get('Content-Type', ''):
             quote_res = quote_response.json()
+            
+            # CRITICAL SECURITY GUARD APPLIED: Bypasses HTTP 200 token expiration error envelopes cleanly
             if quote_res.get('status') == 'success' and instrument_key in quote_res.get('data', {}):
                 spot_price = quote_res['data'][instrument_key]['last_price']
                 atm_strike = int(round(spot_price / oi_step) * oi_step)
-                is_live = True
                 
                 # B. Fetch Option Chain ONLY if Spot Price step succeeded cleanly
                 chain_url = 'https://upstox.com'
@@ -116,11 +117,10 @@ if upstox_token:
                         timestamp_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         
                         # Detect target expiry date dynamically from payload metadata
-                        if len(raw_data) > 0:
-                            first_row = raw_data[0]
-                            sample_leg = first_row.get('call_options') or first_row.get('put_options')
-                            if sample_leg:
-                                detected_expiry = sample_leg.get('metadata', {}).get('expiry_date', computed_expiry_str)
+                        first_row = raw_data[0]
+                        sample_leg = first_row.get('call_options') or first_row.get('put_options')
+                        if sample_leg:
+                            detected_expiry = sample_leg.get('metadata', {}).get('expiry_date', computed_expiry_str)
 
                         # Loop through option chain array matrices
                         for item in raw_data:
@@ -162,6 +162,7 @@ if upstox_token:
                         oi_resistance = best_call_strike
                         oi_support = best_put_strike
                         live_pcr = round(total_put_oi / total_call_oi, 2) if total_call_oi > 0 else 1.0
+                        is_live = True
                         
                         atm_premium = premium_lookup.get(atm_strike, atm_premium)
                         oi_wall_premium = premium_lookup.get(oi_wall_strike, oi_wall_premium)
@@ -183,16 +184,14 @@ if upstox_token:
                             json.dump(json_package, j_file, indent=4)
                             
                         st.sidebar.success("💾 Snapshots Documented!")
-                else:
-                    st.sidebar.warning(f"Option Chain Server rejected parameters ({chain_response.status_code}). Using emulations.")
             else:
-                st.sidebar.error("Upstox rejected token data framework. Running secure mathematical simulation.")
-                is_live = False
+                # Catch-all execution for valid JSON strings that contain authorization refusal errors
+                st.sidebar.error("Upstox Gateway refused token validation. Switched to mathematical modeling.")
         else:
-            st.sidebar.error(f"Upstox Authorization Refused ({quote_response.status_code}). Token is likely expired.")
+            st.sidebar.error(f"Network error route ({quote_response.status_code}). Token is likely expired.")
             
     except Exception as e:
-        st.sidebar.error(f"Fallback Active. Math Model Processing Engine Enabled.")
+        st.sidebar.error(f"API Interface Offline. Mathematical Emulation Engine Active.")
 
 # 4. HEADER DATA STRIP METRICS PANEL
 col_m1, col_m2, col_m3, col_m4, col_m5 = st.columns(5)
@@ -238,6 +237,12 @@ y_adjusted = y_initial + (payoff_hedge * lot_size)
 # Strategy Break-even Boundaries
 lower_be = strike_buy + (atm_premium - (2 * oi_wall_premium))
 upper_be = strike_sell + ((strike_sell - strike_buy) - (atm_premium - (2 * oi_wall_premium)))
+
+# Display Connection Banner Status Ribbon
+if is_live:
+    st.success(f"🟢 LIVE API FEED MODE • Index: {selected_index} | Isolated Expiry: {detected_expiry}")
+else:
+    st.warning(f"🟡 SIMULATION MODE (Mathematical Model Engine) • Emulating Statistical Math Curves for {selected_index}")
 
 # 5. Dual Dashboard Plot Layout
 col_left, col_right = st.columns(2)
