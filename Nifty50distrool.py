@@ -72,26 +72,26 @@ INDICES = {
 
 # ── Upstox API Helper ──
 class UpstoxClient:
-    def __init__(self, token: str):
-        # Format and verify token structure cleanly
+    def __init__(self, token: str, api_key: str):
         clean_token = token.strip().replace("Bearer ", "")
+        # Forced inclusion of both required Upstox developer headers
         self.headers = {
             "Authorization": f"Bearer {clean_token}",
+            "api_key": api_key.strip(),
             "Accept": "application/json",
         }
 
     def _safe_json(self, response):
-        """Safely parses response bodies, avoiding string crashes on raw HTML marketing pages."""
+        """Safely parses response bodies, avoiding string crashes on raw HTML pages."""
         if "application/json" not in response.headers.get("Content-Type", "").lower():
             raise ValueError(
-                f"The API returned a web page instead of market data JSON. "
-                f"This usually means your Access Token is expired, invalid, or being blocked by the Upstox firewall. "
-                f"Status: {response.status_code}. Snippet: {response.text[:120]}"
+                f"The API returned an HTML web page instead of market data JSON. "
+                f"This means Upstox is rejecting your combination of Access Token and API Key (Client ID). "
+                f"Status Code: {response.status_code}. Snippet: {response.text[:140]}"
             )
         return response.json()
 
     def get_spot_price(self, instrument_key: str):
-        # Fixed: Changed endpoint path from plural 'quotes' to official singular 'quote'
         url = "https://upstox.com"
         params = {"instrument_key": instrument_key}
         r = requests.get(url, headers=self.headers, params=params, timeout=10)
@@ -238,7 +238,11 @@ def black_scholes_greeks(S, K, T, r, sigma, option_type="CE"):
 
 
 # ── Sidebar Setup ──
-api_token = st.sidebar.text_input("🔑 Upstox Access Token", type="password", value="")
+st.sidebar.markdown('<div class="sidebar-header">Authentication</div>', unsafe_allow_html=True)
+api_key = st.sidebar.text_input("🔑 Upstox API Key (Client ID)", type="password", value="")
+api_token = st.sidebar.text_input("🔓 Upstox Access Token (Bearer)", type="password", value="")
+
+st.sidebar.markdown("---")
 selected_index_name = st.sidebar.selectbox("🎯 Select Underlying Index", list(INDICES.keys()))
 
 st.sidebar.markdown("---")
@@ -251,11 +255,12 @@ st.sidebar.markdown("---")
 auto_refresh = st.sidebar.checkbox("🔄 Enable Auto-Refresh (10s Triggers)", value=False)
 
 # ── Core Engine Evaluation Loop ──
-if not api_token:
-    st.info("💡 Please input your Upstox API Bearer Token in the sidebar console to initialize the engine pipelines.")
+if not api_token or not api_key:
+    st.info("💡 Please enter BOTH your **Upstox API Key (Client ID)** and **Access Token** in the sidebar console to initialize the engine pipelines.")
 else:
     try:
-        client = UpstoxClient(token=api_token)
+        # Initialized with both validation criteria pieces
+        client = UpstoxClient(token=api_token, api_key=api_key)
         index_meta = INDICES[selected_index_name]
         diff = index_meta["diff"]
         
@@ -326,6 +331,7 @@ else:
             sentiment = "Mildly Bearish Sentiment"
             card_bg = "background: linear-gradient(135deg, #ef4444, #b91c1c);"
             
+        # ── Rendering Dashboard View Elements ──
         m_col1, m_col2, m_col3, m_col4 = st.columns(4)
         m_col1.metric("Underlying Spot Price", f"₹ {spot_price:,.2f}")
         m_col2.metric("Calculated ATM Level", f"{atm_strike}")
@@ -333,7 +339,7 @@ else:
         if adx_metrics:
             m_col4.metric("ADX (14 Period Trend)", f"{adx_metrics['adx']}", f"DI+/DI-: {adx_metrics['plus_di']}/{adx_metrics['minus_di']}")
         else:
-            m_col4.metric("ADX (14 Period Trend)", "Calculated")
+            m_col4.metric("ADX (14 Period Trend)", "Processing")
 
         st.markdown(f"""
         <div class="direction-card" style="{card_bg}">
