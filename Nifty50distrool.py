@@ -59,12 +59,12 @@ footer { visibility: hidden; }
 # ── Title Bar Fixed on Top ──
 st.title("⚡ Upstox Live Multi-Index OI & Statistical Dashboard")
 
-# ── Index Definitions ──
+# ── Index Definitions (Keys matching Upstox Instrument Master) ──
 INDICES = {
     "NIFTY 50": {"key": "NSE_INDEX|Nifty_50", "lot_size": 50, "diff": 50, "default_spot": 23800},
     "BANK NIFTY": {"key": "NSE_INDEX|Nifty_Bank", "lot_size": 15, "diff": 100, "default_spot": 51200},
     "FINNIFTY": {"key": "NSE_INDEX|FINNIFTY", "lot_size": 40, "diff": 50, "default_spot": 22400},
-    "MIDCAP NIFTY": {"key": "NSE_INDEX|NIFTY MID SELECT", "symbol": "MIDCPNIFTY", "diff": 25, "default_spot": 12100},
+    "MIDCAP NIFTY": {"key": "NSE_INDEX|MIDCPNIFTY", "lot_size": 75, "diff": 25, "default_spot": 12100},
 }
 
 # ── Upstox API Helper ──
@@ -81,9 +81,7 @@ class UpstoxClient:
     def get_spot_price(self, instrument_key: str):
         url = f"{self.BASE}/market-quote/ltp"
         r = requests.get(url, headers=self.headers, params={"instrument_key": instrument_key}, timeout=10)
-        r.raise_for_status()
-        data = r.json()
-        return data["data"][instrument_key]["last_price"]
+        return r
 
     def get_expiries(self, instrument_key: str):
         """Generates target expiry array by naturally projecting next close calendar Thursdays."""
@@ -101,16 +99,14 @@ class UpstoxClient:
         url = f"{self.BASE}/option/chain"
         params = {"instrument_key": instrument_key, "expiry_date": expiry_date}
         r = requests.get(url, headers=self.headers, params=params, timeout=10)
-        if r.status_code != 200 or 'application/json' not in r.headers.get('Content-Type', ''):
-            return []
-        return r.json().get("data", [])
+        return r
 
 # ── Sidebar Setup ──
 st.sidebar.markdown('<div class="sidebar-header">UPSTOX Engine</div>', unsafe_allow_html=True)
 st.sidebar.markdown('<div class="sidebar-title">OI Analyzer Pro</div>', unsafe_allow_html=True)
 st.sidebar.markdown("---")
 
-api_token = st.sidebar.text_input("Upstox Access Token (Bearer)", type="password", help="Paste your active Bearer access token here.")
+api_token = st.sidebar.text_input("Upstox Access Token (Bearer)", type="password", help="Paste only the raw alphanumeric token here. Do NOT type 'Bearer'.")
 selected_idx_label = st.sidebar.selectbox("Select Target Asset Index:", list(INDICES.keys()))
 
 lot_size = INDICES[selected_idx_label]["lot_size"]
@@ -127,7 +123,7 @@ raw_data = []
 expiries_list = client.get_expiries(instrument_key)
 selected_expiry = st.sidebar.selectbox("Select Expiry Date:", expiries_list)
 
-# FIXED CORE SEQUENCE: Moved slider inputs up so variables are registered in memory before data handlers use them
+# Volatility and Parameters Configuration Widgets
 st.sidebar.header("🔧 Alpha System Multipliers")
 iv_percent = st.sidebar.slider("Implied Volatility (IV %)", 5.0, 40.0, 12.0, 0.5) / 100
 today_cal = datetime.now()
@@ -157,75 +153,96 @@ oi_resistance = atm_strike + oi_step
 money_velocity_ratio = 1.05  
 volatility_skew_index = 1.02 
 
+# ── Live Data Extract & Validation Engine ──
 if api_token:
     try:
-        spot_price = client.get_spot_price(instrument_key)
-        atm_strike = int(round(spot_price / oi_step) * oi_step)
-        raw_data = client.get_option_chain(instrument_key, selected_expiry)
+        quote_response = client.get_spot_price(instrument_key)
         
-        if len(raw_data) > 0:
-            max_call_oi, max_put_oi = -1, -1
-            total_call_oi, total_put_oi = 0, 0
-            total_call_coi, total_put_coi = 0, 0
-            total_call_iv, total_put_iv = 0.0, 0.0
-            
-            best_call_strike, best_put_strike = atm_strike + oi_step, atm_strike - oi_step
-            premium_lookup = {}
-            processed_records = []
-            timestamp_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        if quote_response.status_code == 200 and 'application/json' in quote_response.headers.get('Content-Type', ''):
+            quote_res = quote_response.json()
+            if quote_res.get('status') == 'success':
+                spot_price = quote_res['data'][instrument_key]['last_price']
+                atm_strike = int(round(spot_price / oi_step) * oi_step)
+                
+                chain_response = client.get_option_chain(instrument_key, selected_expiry)
+                
+                if chain_response.status_code == 200 and 'application/json' in chain_response.headers.get('Content-Type', ''):
+                    chain_res = chain_response.json()
+                    if chain_res.get('status') == 'success' and len(chain_res.get('data', [])) > 0:
+                        raw_data = chain_res['data']
+                        
+                        max_call_oi, max_put_oi = -1, -1
+                        total_call_oi, total_put_oi = 0, 0
+                        total_call_coi, total_put_coi = 0, 0
+                        total_call_iv, total_put_iv = 0.0, 0.0
+                        
+                        best_call_strike, best_put_strike = atm_strike + oi_step, atm_strike - oi_step
+                        premium_lookup = {}
+                        processed_records = []
+                        timestamp_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-            for item in raw_data:
-                strike = int(item['strike_price'])
-                ce_data = item.get('call_options', {}).get('market_data', {}) if item.get('call_options') else {}
-                pe_data = item.get('put_options', {}).get('market_data', {}) if item.get('put_options') else {}
-                
-                c_oi, p_oi = ce_data.get('oi', 0), pe_data.get('oi', 0)
-                c_coi, p_coi = ce_data.get('oi_change', 0), pe_data.get('oi_change', 0)
-                c_iv, p_iv = ce_data.get('implied_volatility', 12.0), pe_data.get('implied_volatility', 12.0)
-                
-                total_call_oi += c_oi
-                total_put_oi += p_oi
-                total_call_coi += abs(c_coi)
-                total_put_coi += abs(p_coi)
-                
-                if abs(strike - atm_strike) <= (oi_step * 3):
-                    total_call_iv += c_iv
-                    total_put_iv += p_iv
-                
-                premium_lookup[strike] = ce_data.get('ltp', atm_premium)
-                
-                if strike > spot_price and c_oi > max_call_oi:
-                    max_call_oi = c_oi
-                    best_call_strike = strike
-                if strike < spot_price and p_oi > max_put_oi:
-                    max_put_oi = p_oi
-                    best_put_strike = strike
-                    
-                processed_records.append({
-                    "Timestamp": timestamp_str, "Underlying": selected_idx_label, "Spot_Price": spot_price,
-                    "Expiry_Date": selected_expiry, "Strike_Price": strike, "CE_LTP": ce_data.get('ltp', 0.0),
-                    "CE_OI": c_oi, "PE_LTP": pe_data.get('ltp', 0.0), "PE_OI": p_oi
-                })
-            
-            oi_wall_strike = best_call_strike
-            oi_resistance, oi_support = best_call_strike, best_put_strike
-            live_pcr = round(total_put_oi / total_call_oi, 2) if total_call_oi > 0 else 1.0
-            
-            money_velocity_ratio = round(total_put_coi / total_call_coi, 2) if total_call_coi > 0 else 1.0
-            volatility_skew_index = round(total_put_iv / total_call_iv, 2) if total_call_iv > 0 else 1.0
-            is_live = True
-            
-            atm_premium = premium_lookup.get(atm_strike, atm_premium)
-            oi_wall_premium = premium_lookup.get(oi_wall_strike, oi_wall_premium)
-            
-            strike_sell = oi_wall_strike
-            strike_hedge = strike_sell + (strike_sell - atm_strike)
-            hedge_premium = premium_lookup.get(strike_hedge, hedge_premium)
-            
-            filename_prefix = selected_idx_label.replace(" ", "_").lower()
-            pd.DataFrame(processed_records).to_csv(f"{filename_prefix}_chain_latest.csv", index=False)
-    except Exception:
-        pass
+                        for item in raw_data:
+                            strike = int(item['strike_price'])
+                            ce_data = item.get('call_options', {}).get('market_data', {}) if item.get('call_options') else {}
+                            pe_data = item.get('put_options', {}).get('market_data', {}) if item.get('put_options') else {}
+                            
+                            c_oi, p_oi = ce_data.get('oi', 0), pe_data.get('oi', 0)
+                            c_coi, p_coi = ce_data.get('oi_change', 0), pe_data.get('oi_change', 0)
+                            c_iv, p_iv = ce_data.get('implied_volatility', 12.0), pe_data.get('implied_volatility', 12.0)
+                            
+                            total_call_oi += c_oi
+                            total_put_oi += p_oi
+                            total_call_coi += abs(c_coi)
+                            total_put_coi += abs(p_coi)
+                            
+                            if abs(strike - atm_strike) <= (oi_step * 3):
+                                total_call_iv += c_iv
+                                total_put_iv += p_iv
+                            
+                            premium_lookup[strike] = ce_data.get('ltp', atm_premium)
+                            
+                            if strike > spot_price and c_oi > max_call_oi:
+                                max_call_oi = c_oi
+                                best_call_strike = strike
+                            if strike < spot_price and p_oi > max_put_oi:
+                                max_put_oi = p_oi
+                                best_put_strike = strike
+                                
+                            processed_records.append({
+                                "Timestamp": timestamp_str, "Underlying": selected_idx_label, "Spot_Price": spot_price,
+                                "Expiry_Date": selected_expiry, "Strike_Price": strike, "CE_LTP": ce_data.get('ltp', 0.0),
+                                "CE_OI": c_oi, "PE_LTP": pe_data.get('ltp', 0.0), "PE_OI": p_oi
+                            })
+                        
+                        oi_wall_strike = best_call_strike
+                        oi_resistance, oi_support = best_call_strike, best_put_strike
+                        live_pcr = round(total_put_oi / total_call_oi, 2) if total_call_oi > 0 else 1.0
+                        
+                        money_velocity_ratio = round(total_put_coi / total_call_coi, 2) if total_call_coi > 0 else 1.0
+                        volatility_skew_index = round(total_put_iv / total_call_iv, 2) if total_call_iv > 0 else 1.0
+                        is_live = True
+                        
+                        atm_premium = premium_lookup.get(atm_strike, atm_premium)
+                        oi_wall_premium = premium_lookup.get(oi_wall_strike, oi_wall_premium)
+                        
+                        strike_sell = oi_wall_strike
+                        strike_hedge = strike_sell + (strike_sell - atm_strike)
+                        hedge_premium = premium_lookup.get(strike_hedge, hedge_premium)
+                        
+                        # Store structural records onto server disk arrays
+                        filename_prefix = selected_idx_label.replace(" ", "_").lower()
+                        pd.DataFrame(processed_records).to_csv(f"{filename_prefix}_chain_latest.csv", index=False)
+                        st.sidebar.success("🟢 Connected & Syncing Live!")
+                    else:
+                        st.sidebar.error("❌ Expiry Mismatch: Upstox option chain empty for this date string.")
+                else:
+                    st.sidebar.error(f"❌ Option Chain Refused. HTTP: {chain_response.status_code}")
+            else:
+                st.sidebar.error("❌ Token Denied: Upstox rejected developer app verification payload.")
+        else:
+            st.sidebar.error(f"❌ LTP Fetch Blocked. HTTP: {quote_response.status_code}")
+    except Exception as e:
+        st.sidebar.error(f"⚠️ Diagnostic Warning: {str(e)}")
 
 if not is_live:
     atm_strike = int(round(spot_price / oi_step) * oi_step)
@@ -370,6 +387,7 @@ with col_rec2:
         }
         st.table(adj_data)
 
+# ── 9. Automated Streaming Rerun Controller Loops ──
 if auto_refresh:
     time.sleep(refresh_interval)
     st.rerun()
