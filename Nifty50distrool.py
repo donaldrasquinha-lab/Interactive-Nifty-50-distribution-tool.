@@ -215,6 +215,25 @@ class UpstoxClient:
         r.raise_for_status()
         return self._safe_json(r).get("data", [])
 
+    def get_option_contracts(self, instrument_key: str, expiry_date: str) -> list:
+        """
+        Fetch ALL option contracts for an instrument+expiry via /option/contract.
+        Returns list of contract dicts with instrument_key, strike_price, option_type etc.
+        This gives the FULL strike range, unlike /option/chain which is limited.
+        """
+        r = requests.get(f"{UPSTOX_BASE}/option/contract",
+                         headers=self.headers,
+                         params={"instrument_key": instrument_key}, timeout=10)
+        r.raise_for_status()
+        all_contracts = self._safe_json(r).get("data", [])
+        # Filter to the target expiry
+        matched = []
+        for c in all_contracts:
+            exp = str(c.get("expiry", ""))[:10]
+            if exp == expiry_date:
+                matched.append(c)
+        return matched
+
     def get_ltp_batch(self, instrument_keys: list) -> dict:
         """
         Fetch LTP for up to 50 instruments in one call via /market-quote/ltp.
@@ -446,21 +465,80 @@ try:
     tte_years = max((expiry_dt - datetime.now()).total_seconds() / (86400*365), 0.0001)
     tte_days = max(tte_years * 365, 0.01)
 
-    with st.spinner("Loading chain & candles..."):
+    with st.spinner("Loading chain, contracts & candles..."):
         candles_df = client.get_historical_candles(index_meta["key"], "day", 60)
         adx_metrics = compute_adx(candles_df)
         chain_raw = client.get_option_chain(index_meta["key"], selected_expiry)
+        # Fetch ALL contracts for this expiry — gives full strike range with instrument keys
+        all_contracts = client.get_option_contracts(index_meta["key"], selected_expiry)
 
-    if not chain_raw:
+    if not chain_raw and not all_contracts:
         st.warning("Empty chain for this expiry.")
         st.stop()
 
     atm_strike = round(spot_price / diff) * diff
 
-    # ── Build chain records + instrument key map ──
+    # ── Build COMPLETE instrument key map from /option/contract ──
+    # This covers ALL strikes for the expiry, not just the limited /option/chain window
+    strike_inst_map = {}  # (strike, "CE"/"PE") -> instrument_key
+    for c in all_contracts:
+        sp = float(c.get("strike_price", 0))
+        opt_type = str(c.get("option_type", "")).upper()
+        inst_key = c.get("instrument_key", "")
+        if inst_key and opt_type in ("CE", "PE"):
+            strike_inst_map[(sp, opt_type)] = inst_key
+
+    # Also populate from chain_raw in case /option/contract used different field names
+    for sd in chain_raw:
+        sp = float(sd.get("strike_price", 0))
+        for side, label in [("call_options", "CE"), ("put_options", "PE")]:
+            opt = sd.get(side, {}) or {}
+            ik = opt.get("instrument_key", "")
+            if ik and (sp, label) not in strike_inst_map:
+                strike_inst_map[(sp, label)] = ik
+
+    # ── Determine which strikes we need LTPs for ──
+    # Display range + strategy strikes
+    display_strikes = set()
+    for sd in chain_raw:
+        sp = float(sd.get("strike_price", 0))
+        if abs(sp - atm_strike) <= strike_depth * diff:
+            display_strikes.add(sp)
+
+    # σ bounds for strategy (compute early so we know which strikes to fetch)
+    _std_tmp = spot_price * iv_override * np.sqrt(tte_years)
+    _lo1_tmp = spot_price - _std_tmp
+    _hi1_tmp = spot_price + _std_tmp
+    _ic_sell_put = round(_lo1_tmp / diff) * diff
+    _ic_sell_call = round(_hi1_tmp / diff) * diff
+    strategy_strikes = {atm_strike, _ic_sell_put, _ic_sell_call,
+                        _ic_sell_put - diff, _ic_sell_call + diff}
+
+    all_needed_strikes = display_strikes | strategy_strikes
+
+    # ── Batch-fetch LTPs from Upstox for ALL needed strikes ──
+    keys_for_ltp = []
+    key_to_strike_opt = {}
+    for strike in all_needed_strikes:
+        for opt_type in ["CE", "PE"]:
+            if (strike, opt_type) in strike_inst_map:
+                ik = strike_inst_map[(strike, opt_type)]
+                keys_for_ltp.append(ik)
+                key_to_strike_opt[ik] = (strike, opt_type)
+
+    live_ltp_map = {}  # (strike, "CE"/"PE") -> ltp
+    if keys_for_ltp:
+        try:
+            with st.spinner(f"Fetching live prices for {len(keys_for_ltp)} contracts..."):
+                fetched = client.get_ltp_batch(keys_for_ltp)
+            for ik, price in fetched.items():
+                if ik in key_to_strike_opt:
+                    live_ltp_map[key_to_strike_opt[ik]] = price
+        except Exception as e:
+            st.warning(f"⚠️ Could not fetch live LTPs: {e}. Using chain data + theoretical prices.")
+
+    # ── Build chain records (filtered by strike_depth for display) ──
     records = []
-    # Maps: (strike, "CE"/"PE") -> instrument_key for direct LTP fetch
-    strike_inst_map = {}
 
     for sd in chain_raw:
         sp = float(sd.get("strike_price", 0))
@@ -471,18 +549,11 @@ try:
         ce_md = ce.get("market_data", {}) or {}
         pe_md = pe.get("market_data", {}) or {}
 
-        # Capture instrument keys for direct LTP fallback
-        ce_inst_key = ce.get("instrument_key", "")
-        pe_inst_key = pe.get("instrument_key", "")
-        if ce_inst_key:
-            strike_inst_map[(sp, "CE")] = ce_inst_key
-        if pe_inst_key:
-            strike_inst_map[(sp, "PE")] = pe_inst_key
-
         ce_oi = int(float(ce_md.get("oi", 0) or 0))
         pe_oi = int(float(pe_md.get("oi", 0) or 0))
-        ce_ltp = float(ce_md.get("ltp", 0) or 0)
-        pe_ltp = float(pe_md.get("ltp", 0) or 0)
+        # Use live LTP if available, else chain LTP
+        ce_ltp = live_ltp_map.get((sp, "CE"), 0.0) or float(ce_md.get("ltp", 0) or 0)
+        pe_ltp = live_ltp_map.get((sp, "PE"), 0.0) or float(pe_md.get("ltp", 0) or 0)
         ce_vol = int(float(ce_md.get("volume", 0) or 0))
         pe_vol = int(float(pe_md.get("volume", 0) or 0))
         ce_prev_oi = int(float(ce_md.get("prev_oi", ce_oi) or ce_oi))
@@ -806,51 +877,43 @@ try:
 
         strat_choice = st.selectbox("Select Strategy", ["Iron Condor", "Short Straddle", "Iron Butterfly", "Bull Put Spread", "Bear Call Spread"])
 
-        # Cache for API-fetched LTPs to avoid redundant calls
-        if "fetched_ltps" not in st.session_state:
-            st.session_state.fetched_ltps = {}
-
         def get_ltp(strike):
             """
-            Look up CE & PE LTP for a strike.
-            1. Try the chain DataFrame first.
-            2. If either is 0, fetch directly from Upstox /market-quote/ltp.
+            Look up CE & PE LTP for a strike with 3-tier fallback:
+            1. Live LTP from batch API call (already fetched at load time)
+            2. Chain DataFrame LTP
+            3. Black-Scholes theoretical price (last resort, marked with '(theo)')
             """
-            ce_ltp, pe_ltp = 0.0, 0.0
-            m = df[df["Strike"] == strike]
-            if not m.empty:
-                ce_ltp = float(m.iloc[0]["CE LTP"])
-                pe_ltp = float(m.iloc[0]["PE LTP"])
+            ce_ltp = live_ltp_map.get((strike, "CE"), 0.0)
+            pe_ltp = live_ltp_map.get((strike, "PE"), 0.0)
 
-            # Fetch from API if chain returned 0
-            keys_to_fetch = {}
-            if ce_ltp == 0 and (strike, "CE") in strike_inst_map:
-                cache_key = strike_inst_map[(strike, "CE")]
-                if cache_key in st.session_state.fetched_ltps:
-                    ce_ltp = st.session_state.fetched_ltps[cache_key]
-                else:
-                    keys_to_fetch["CE"] = cache_key
-            if pe_ltp == 0 and (strike, "PE") in strike_inst_map:
-                cache_key = strike_inst_map[(strike, "PE")]
-                if cache_key in st.session_state.fetched_ltps:
-                    pe_ltp = st.session_state.fetched_ltps[cache_key]
-                else:
-                    keys_to_fetch["PE"] = cache_key
+            # Fallback to chain DataFrame
+            if ce_ltp == 0 or pe_ltp == 0:
+                m = df[df["Strike"] == strike]
+                if not m.empty:
+                    if ce_ltp == 0:
+                        ce_ltp = float(m.iloc[0]["CE LTP"])
+                    if pe_ltp == 0:
+                        pe_ltp = float(m.iloc[0]["PE LTP"])
 
-            if keys_to_fetch:
-                try:
-                    fetched = client.get_ltp_batch(list(keys_to_fetch.values()))
-                    for opt_type, inst_key in keys_to_fetch.items():
-                        price = fetched.get(inst_key, 0.0)
-                        st.session_state.fetched_ltps[inst_key] = price
-                        if opt_type == "CE":
-                            ce_ltp = price
-                        else:
-                            pe_ltp = price
-                except Exception:
-                    pass  # Keep chain values if API call fails
+            # Last resort: BS theoretical price
+            if ce_ltp == 0:
+                ce_ltp = bs_greeks(spot_price, strike, tte_years, risk_free_rate, iv_override, "CE")["price"]
+            if pe_ltp == 0:
+                pe_ltp = bs_greeks(spot_price, strike, tte_years, risk_free_rate, iv_override, "PE")["price"]
 
             return ce_ltp, pe_ltp
+
+        def price_source_label(strike, opt_type):
+            """Returns a label indicating price source."""
+            if live_ltp_map.get((strike, opt_type), 0) > 0:
+                return ""  # Live — no label needed
+            m = df[df["Strike"] == strike]
+            if not m.empty:
+                col = "CE LTP" if opt_type == "CE" else "PE LTP"
+                if float(m.iloc[0][col]) > 0:
+                    return ""  # Chain — no label needed
+            return " <span style='font-size:10px; color:#94a3b8;'>(theo)</span>"
 
         legs = []
 
@@ -871,10 +934,10 @@ try:
             <div class="strat-card">
                 <div class="strat-title" style="color:#3b82f6;">📊 Iron Condor</div>
                 <div class="strat-leg">
-                    BUY 1× <b>{ic_buy_put} PE</b> @ ₹{p_buy_pe:.2f}<br>
-                    SELL 1× <b>{ic_sell_put} PE</b> @ ₹{p_sell_pe:.2f}<br>
-                    SELL 1× <b>{ic_sell_call} CE</b> @ ₹{c_sell_ce:.2f}<br>
-                    BUY 1× <b>{ic_buy_call} CE</b> @ ₹{c_buy_ce:.2f}
+                    BUY 1× <b>{ic_buy_put} PE</b> @ ₹{p_buy_pe:.2f}{price_source_label(ic_buy_put, "PE")}<br>
+                    SELL 1× <b>{ic_sell_put} PE</b> @ ₹{p_sell_pe:.2f}{price_source_label(ic_sell_put, "PE")}<br>
+                    SELL 1× <b>{ic_sell_call} CE</b> @ ₹{c_sell_ce:.2f}{price_source_label(ic_sell_call, "CE")}<br>
+                    BUY 1× <b>{ic_buy_call} CE</b> @ ₹{c_buy_ce:.2f}{price_source_label(ic_buy_call, "CE")}
                 </div>
                 <div class="strat-profit" style="color:#4ade80;">
                     💰 Net Credit: ₹{net:,.2f}/lot &nbsp;(₹{net*lot_size:,.0f} total)
@@ -898,8 +961,8 @@ try:
             <div class="strat-card">
                 <div class="strat-title" style="color:#f59e0b;">🔥 Short Straddle</div>
                 <div class="strat-leg">
-                    SELL 1× <b>{atm_strike} CE</b> @ ₹{c_atm:.2f}<br>
-                    SELL 1× <b>{atm_strike} PE</b> @ ₹{p_atm:.2f}
+                    SELL 1× <b>{atm_strike} CE</b> @ ₹{c_atm:.2f}{price_source_label(atm_strike, "CE")}<br>
+                    SELL 1× <b>{atm_strike} PE</b> @ ₹{p_atm:.2f}{price_source_label(atm_strike, "PE")}
                 </div>
                 <div class="strat-profit" style="color:#4ade80;">
                     💰 Net Credit: ₹{net:,.2f}/lot &nbsp;(₹{net*lot_size:,.0f} total)
@@ -925,10 +988,10 @@ try:
             <div class="strat-card">
                 <div class="strat-title" style="color:#8b5cf6;">🦋 Iron Butterfly</div>
                 <div class="strat-leg">
-                    BUY 1× <b>{ic_buy_put} PE</b> @ ₹{p_buy_pe:.2f}<br>
-                    SELL 1× <b>{atm_strike} PE</b> @ ₹{p_atm:.2f}<br>
-                    SELL 1× <b>{atm_strike} CE</b> @ ₹{c_atm:.2f}<br>
-                    BUY 1× <b>{ic_buy_call} CE</b> @ ₹{c_buy_ce:.2f}
+                    BUY 1× <b>{ic_buy_put} PE</b> @ ₹{p_buy_pe:.2f}{price_source_label(ic_buy_put, "PE")}<br>
+                    SELL 1× <b>{atm_strike} PE</b> @ ₹{p_atm:.2f}{price_source_label(atm_strike, "PE")}<br>
+                    SELL 1× <b>{atm_strike} CE</b> @ ₹{c_atm:.2f}{price_source_label(atm_strike, "CE")}<br>
+                    BUY 1× <b>{ic_buy_call} CE</b> @ ₹{c_buy_ce:.2f}{price_source_label(ic_buy_call, "CE")}
                 </div>
                 <div class="strat-profit" style="color:#4ade80;">
                     💰 Net Credit: ₹{net:,.2f}/lot &nbsp;(₹{net*lot_size:,.0f} total)
@@ -951,8 +1014,8 @@ try:
             <div class="strat-card">
                 <div class="strat-title" style="color:#22c55e;">📈 Bull Put Spread</div>
                 <div class="strat-leg">
-                    SELL 1× <b>{sell_strike} PE</b> @ ₹{p_sell:.2f}<br>
-                    BUY 1× <b>{buy_strike} PE</b> @ ₹{p_buy:.2f}
+                    SELL 1× <b>{sell_strike} PE</b> @ ₹{p_sell:.2f}{price_source_label(sell_strike, "PE")}<br>
+                    BUY 1× <b>{buy_strike} PE</b> @ ₹{p_buy:.2f}{price_source_label(buy_strike, "PE")}
                 </div>
                 <div class="strat-profit" style="color:#4ade80;">
                     💰 Net Credit: ₹{net:,.2f}/lot &nbsp;(₹{net*lot_size:,.0f} total)
@@ -978,8 +1041,8 @@ try:
             <div class="strat-card">
                 <div class="strat-title" style="color:#ef4444;">📉 Bear Call Spread</div>
                 <div class="strat-leg">
-                    SELL 1× <b>{sell_strike} CE</b> @ ₹{c_sell:.2f}<br>
-                    BUY 1× <b>{buy_strike} CE</b> @ ₹{c_buy:.2f}
+                    SELL 1× <b>{sell_strike} CE</b> @ ₹{c_sell:.2f}{price_source_label(sell_strike, "CE")}<br>
+                    BUY 1× <b>{buy_strike} CE</b> @ ₹{c_buy:.2f}{price_source_label(buy_strike, "CE")}
                 </div>
                 <div class="strat-profit" style="color:#4ade80;">
                     💰 Net Credit: ₹{net:,.2f}/lot &nbsp;(₹{net*lot_size:,.0f} total)
