@@ -63,30 +63,18 @@ div[data-testid="stMetric"] {
     border: 1px solid var(--border);
     border-radius: 10px;
     padding: 12px 16px;
-    overflow: visible !important;
 }
 div[data-testid="stMetric"] label {
-    color: #cbd5e1 !important;
+    color: var(--text-secondary) !important;
     font-size: 10px !important;
     letter-spacing: 1.2px;
     text-transform: uppercase;
-    font-weight: 600 !important;
+    font-weight: 500 !important;
 }
 div[data-testid="stMetric"] div[data-testid="stMetricValue"] {
     font-family: 'JetBrains Mono', monospace !important;
-    font-weight: 800 !important;
+    font-weight: 700 !important;
     font-size: 20px !important;
-    color: #ffffff !important;
-    white-space: nowrap !important;
-    overflow: visible !important;
-    text-overflow: unset !important;
-}
-div[data-testid="stMetric"] div[data-testid="stMetricDelta"] {
-    color: #94a3b8 !important;
-    font-weight: 600 !important;
-}
-div[data-testid="stMetric"] div[data-testid="stMetricDelta"] svg {
-    display: none;
 }
 
 /* Tabs */
@@ -110,18 +98,14 @@ div[data-testid="stTabs"] button[data-baseweb="tab"] {
 /* Strategy card */
 .strat-card {
     background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px;
-    padding: 18px; margin: 10px 0; color: #ffffff;
+    padding: 18px; margin: 10px 0;
 }
 .strat-title {
-    font-size: 14px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.5px;
+    font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;
     margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid var(--border);
 }
-.strat-leg {
-    font-size: 14px; line-height: 2.0; font-family: 'JetBrains Mono', monospace;
-    color: #f1f5f9 !important; font-weight: 600;
-}
-.strat-leg b { color: #ffffff; font-weight: 800; }
-.strat-profit { font-size: 18px; font-weight: 800; margin-top: 12px; }
+.strat-leg { font-size: 13px; line-height: 1.8; font-family: 'JetBrains Mono', monospace; }
+.strat-profit { font-size: 17px; font-weight: 700; margin-top: 10px; }
 
 /* Badge pills */
 .badge { display: inline-block; padding: 3px 10px; border-radius: 5px; font-size: 11px; font-weight: 600; font-family: 'JetBrains Mono', monospace; margin: 2px 3px; }
@@ -215,44 +199,6 @@ class UpstoxClient:
         r.raise_for_status()
         return self._safe_json(r).get("data", [])
 
-    def get_option_contracts(self, instrument_key: str, expiry_date: str) -> list:
-        """
-        Fetch ALL option contracts for an instrument+expiry via /option/contract.
-        Returns list of contract dicts with instrument_key, strike_price, option_type etc.
-        This gives the FULL strike range, unlike /option/chain which is limited.
-        """
-        r = requests.get(f"{UPSTOX_BASE}/option/contract",
-                         headers=self.headers,
-                         params={"instrument_key": instrument_key}, timeout=10)
-        r.raise_for_status()
-        all_contracts = self._safe_json(r).get("data", [])
-        # Filter to the target expiry
-        matched = []
-        for c in all_contracts:
-            exp = str(c.get("expiry", ""))[:10]
-            if exp == expiry_date:
-                matched.append(c)
-        return matched
-
-    def get_ltp_batch(self, instrument_keys: list) -> dict:
-        """
-        Fetch LTP for up to 50 instruments in one call via /market-quote/ltp.
-        Returns {instrument_key: ltp} dict.
-        """
-        result = {}
-        # API allows comma-separated keys, max ~50 per call
-        for i in range(0, len(instrument_keys), 50):
-            batch = instrument_keys[i:i+50]
-            keys_param = ",".join(batch)
-            r = requests.get(f"{UPSTOX_BASE}/market-quote/ltp",
-                             headers=self.headers,
-                             params={"instrument_key": keys_param}, timeout=10)
-            r.raise_for_status()
-            data = self._safe_json(r).get("data", {})
-            for k, v in data.items():
-                result[k] = float(v.get("last_price", 0) or 0)
-        return result
-
     def get_historical_candles(self, instrument_key: str, interval="day", days=45) -> pd.DataFrame:
         to_d = datetime.now().strftime("%Y-%m-%d")
         from_d = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
@@ -326,15 +272,13 @@ def bs_greeks(S, K, T, r, sigma, opt="CE"):
 
 
 def compute_max_pain(df_chain: pd.DataFrame) -> float:
-    strikes = df_chain["Strike"].astype(float).values
-    ce_oi = df_chain["CE OI"].astype(float).values
-    pe_oi = df_chain["PE OI"].astype(float).values
+    strikes = df_chain["Strike"].values
     pain = {}
     for s in strikes:
         total = 0.0
-        for k in range(len(strikes)):
-            total += max(0.0, s - strikes[k]) * pe_oi[k]
-            total += max(0.0, strikes[k] - s) * ce_oi[k]
+        for _, row in df_chain.iterrows():
+            total += max(0, s - row["Strike"]) * row["PE OI"]
+            total += max(0, row["Strike"] - s) * row["CE OI"]
         pain[s] = total
     return min(pain, key=pain.get) if pain else 0.0
 
@@ -359,16 +303,13 @@ def compute_iv_percentile(candles_df: pd.DataFrame, current_iv: float, window=30
     return round(count_below / len(rv_series) * 100, 1)
 
 
-def compute_pnl_heatmap(strategy_legs, lot_size, spot_price, diff, iv_used):
+def compute_pnl_heatmap(strategy_legs, lot_size, spot_price, diff):
     """
     Compute strategy P&L across a grid of spot prices and days-to-expiry.
     Each leg: {"strike": K, "type": "CE"/"PE", "action": "BUY"/"SELL", "premium": ltp}
-    Uses fewer spot steps for readability (strike-aligned grid).
     """
-    # Create a strike-aligned grid: every 'diff' points, ±6 strikes from ATM
-    atm = round(spot_price / diff) * diff
-    spot_range = np.arange(atm - 6*diff, atm + 6*diff + 1, diff)
-    dte_range = np.array([0, 1, 2, 3, 5, 7, 10, 14])
+    spot_range = np.linspace(spot_price - 8*diff, spot_price + 8*diff, 50)
+    dte_range = np.array([0, 1, 2, 3, 5, 7, 10, 14])  # days to expiry
 
     pnl_matrix = np.zeros((len(dte_range), len(spot_range)))
 
@@ -379,14 +320,14 @@ def compute_pnl_heatmap(strategy_legs, lot_size, spot_price, diff, iv_used):
                 K = leg["strike"]
                 prem = leg["premium"]
                 if dte == 0:
+                    # At expiry — intrinsic only
                     if leg["type"] == "CE":
                         val = max(0, s - K)
                     else:
                         val = max(0, K - s)
                 else:
                     T = dte / 365
-                    sigma = iv_used if iv_used > 0 else 0.15
-                    val = bs_greeks(s, K, T, 0.07, sigma, leg["type"])["price"]
+                    val = bs_greeks(s, K, T, 0.07, 0.15, leg["type"])["price"]
 
                 if leg["action"] == "BUY":
                     total += (val - prem)
@@ -465,81 +406,19 @@ try:
     tte_years = max((expiry_dt - datetime.now()).total_seconds() / (86400*365), 0.0001)
     tte_days = max(tte_years * 365, 0.01)
 
-    with st.spinner("Loading chain, contracts & candles..."):
+    with st.spinner("Loading chain & candles..."):
         candles_df = client.get_historical_candles(index_meta["key"], "day", 60)
         adx_metrics = compute_adx(candles_df)
         chain_raw = client.get_option_chain(index_meta["key"], selected_expiry)
-        # Fetch ALL contracts for this expiry — gives full strike range with instrument keys
-        all_contracts = client.get_option_contracts(index_meta["key"], selected_expiry)
 
-    if not chain_raw and not all_contracts:
+    if not chain_raw:
         st.warning("Empty chain for this expiry.")
         st.stop()
 
     atm_strike = round(spot_price / diff) * diff
 
-    # ── Build COMPLETE instrument key map from /option/contract ──
-    # This covers ALL strikes for the expiry, not just the limited /option/chain window
-    strike_inst_map = {}  # (strike, "CE"/"PE") -> instrument_key
-    for c in all_contracts:
-        sp = float(c.get("strike_price", 0))
-        opt_type = str(c.get("option_type", "")).upper()
-        inst_key = c.get("instrument_key", "")
-        if inst_key and opt_type in ("CE", "PE"):
-            strike_inst_map[(sp, opt_type)] = inst_key
-
-    # Also populate from chain_raw in case /option/contract used different field names
-    for sd in chain_raw:
-        sp = float(sd.get("strike_price", 0))
-        for side, label in [("call_options", "CE"), ("put_options", "PE")]:
-            opt = sd.get(side, {}) or {}
-            ik = opt.get("instrument_key", "")
-            if ik and (sp, label) not in strike_inst_map:
-                strike_inst_map[(sp, label)] = ik
-
-    # ── Determine which strikes we need LTPs for ──
-    # Display range + strategy strikes
-    display_strikes = set()
-    for sd in chain_raw:
-        sp = float(sd.get("strike_price", 0))
-        if abs(sp - atm_strike) <= strike_depth * diff:
-            display_strikes.add(sp)
-
-    # σ bounds for strategy (compute early so we know which strikes to fetch)
-    _std_tmp = spot_price * iv_override * np.sqrt(tte_years)
-    _lo1_tmp = spot_price - _std_tmp
-    _hi1_tmp = spot_price + _std_tmp
-    _ic_sell_put = round(_lo1_tmp / diff) * diff
-    _ic_sell_call = round(_hi1_tmp / diff) * diff
-    strategy_strikes = {atm_strike, _ic_sell_put, _ic_sell_call,
-                        _ic_sell_put - diff, _ic_sell_call + diff}
-
-    all_needed_strikes = display_strikes | strategy_strikes
-
-    # ── Batch-fetch LTPs from Upstox for ALL needed strikes ──
-    keys_for_ltp = []
-    key_to_strike_opt = {}
-    for strike in all_needed_strikes:
-        for opt_type in ["CE", "PE"]:
-            if (strike, opt_type) in strike_inst_map:
-                ik = strike_inst_map[(strike, opt_type)]
-                keys_for_ltp.append(ik)
-                key_to_strike_opt[ik] = (strike, opt_type)
-
-    live_ltp_map = {}  # (strike, "CE"/"PE") -> ltp
-    if keys_for_ltp:
-        try:
-            with st.spinner(f"Fetching live prices for {len(keys_for_ltp)} contracts..."):
-                fetched = client.get_ltp_batch(keys_for_ltp)
-            for ik, price in fetched.items():
-                if ik in key_to_strike_opt:
-                    live_ltp_map[key_to_strike_opt[ik]] = price
-        except Exception as e:
-            st.warning(f"⚠️ Could not fetch live LTPs: {e}. Using chain data + theoretical prices.")
-
-    # ── Build chain records (filtered by strike_depth for display) ──
+    # ── Build chain records ──
     records = []
-
     for sd in chain_raw:
         sp = float(sd.get("strike_price", 0))
         if abs(sp - atm_strike) > strike_depth * diff:
@@ -549,17 +428,16 @@ try:
         ce_md = ce.get("market_data", {}) or {}
         pe_md = pe.get("market_data", {}) or {}
 
-        ce_oi = int(float(ce_md.get("oi", 0) or 0))
-        pe_oi = int(float(pe_md.get("oi", 0) or 0))
-        # Use live LTP if available, else chain LTP
-        ce_ltp = live_ltp_map.get((sp, "CE"), 0.0) or float(ce_md.get("ltp", 0) or 0)
-        pe_ltp = live_ltp_map.get((sp, "PE"), 0.0) or float(pe_md.get("ltp", 0) or 0)
-        ce_vol = int(float(ce_md.get("volume", 0) or 0))
-        pe_vol = int(float(pe_md.get("volume", 0) or 0))
-        ce_prev_oi = int(float(ce_md.get("prev_oi", ce_oi) or ce_oi))
-        pe_prev_oi = int(float(pe_md.get("prev_oi", pe_oi) or pe_oi))
-        ce_iv_raw = float(ce_md.get("iv", 0) or 0)
-        pe_iv_raw = float(pe_md.get("iv", 0) or 0)
+        ce_oi = ce_md.get("oi", 0)
+        pe_oi = pe_md.get("oi", 0)
+        ce_ltp = ce_md.get("ltp", 0)
+        pe_ltp = pe_md.get("ltp", 0)
+        ce_vol = ce_md.get("volume", 0)
+        pe_vol = pe_md.get("volume", 0)
+        ce_prev_oi = ce_md.get("prev_oi", ce_oi)  # fallback if not available
+        pe_prev_oi = pe_md.get("prev_oi", pe_oi)
+        ce_iv_raw = ce_md.get("iv", 0)
+        pe_iv_raw = pe_md.get("iv", 0)
 
         ce_sigma = (ce_iv_raw/100) if ce_iv_raw and ce_iv_raw > 0 else iv_override
         pe_sigma = (pe_iv_raw/100) if pe_iv_raw and pe_iv_raw > 0 else iv_override
@@ -583,12 +461,6 @@ try:
 
     df = pd.DataFrame(records).sort_values("Strike").reset_index(drop=True)
 
-    # Force numeric types on all data columns
-    numeric_cols = [c for c in df.columns if c != "Strike"]
-    for col in numeric_cols:
-        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
-    df["Strike"] = df["Strike"].astype(float)
-
     # ── Derived metrics ──
     total_ce_oi = df["CE OI"].sum()
     total_pe_oi = df["PE OI"].sum()
@@ -601,10 +473,6 @@ try:
     atm_row = df[df["Strike"] == atm_strike]
     atm_iv = float(atm_row.iloc[0]["CE IV"]) if not atm_row.empty else iv_override * 100
     iv_pct = compute_iv_percentile(candles_df, atm_iv / 100, window=20)
-
-    # Volume-Weighted Average Strike
-    total_vol = df["CE Vol"].sum() + df["PE Vol"].sum()
-    vwas = ((df["Strike"] * (df["CE Vol"] + df["PE Vol"])).sum()) / total_vol if total_vol > 0 else atm_strike
 
     # PCR history in session state for sparkline
     if "pcr_history" not in st.session_state:
@@ -647,16 +515,15 @@ try:
     #  TOP KPI ROW
     # ═══════════════════════════════════════════════
 
-    k1, k2, k3, k4, k5, k6, k7 = st.columns(7)
+    k1, k2, k3, k4, k5, k6 = st.columns(6)
     k1.metric("Spot", f"₹{spot_price:,.2f}")
     k2.metric("ATM", f"{atm_strike:,.0f}")
     k3.metric("PCR", f"{pcr}")
     k4.metric("Max Pain", f"{max_pain:,.0f}")
-    k5.metric("VWAS", f"{vwas:,.0f}")
     adx_val = adx_metrics["adx"] if adx_metrics else None
-    k6.metric("ADX (14)", f"{adx_val}" if adx_val else "—",
+    k5.metric("ADX (14)", f"{adx_val}" if adx_val else "—",
               f"+DI {adx_metrics['plus_di']}/-DI {adx_metrics['minus_di']}" if adx_metrics else None)
-    k7.metric("DTE", f"{tte_days:.1f} days")
+    k6.metric("DTE", f"{tte_days:.1f} days")
 
     # ── IV Percentile Gauge ──
     iv_color = "#22c55e" if iv_pct < 30 else "#f59e0b" if iv_pct < 70 else "#ef4444"
@@ -683,33 +550,6 @@ try:
             <span class="badge badge-red">Resistance {resistance:,.0f}</span>
             <span class="badge badge-purple">Max Pain {max_pain:,.0f}</span>
             <span class="badge badge-amber">IV Pct {iv_pct:.0f}%</span>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    # ── VWAS Highlight Bar ──
-    vwas_diff = vwas - spot_price
-    vwas_dir = "above" if vwas_diff > 0 else "below" if vwas_diff < 0 else "at"
-    vwas_arrow = "▲" if vwas_diff > 0 else "▼" if vwas_diff < 0 else "●"
-    vwas_clr = "#4ade80" if vwas_diff > 0 else "#f87171" if vwas_diff < 0 else "#e2e8f0"
-    st.markdown(f"""
-    <div style="display:flex; align-items:center; justify-content:space-between; padding:14px 20px; margin:10px 0 14px 0;
-                border:1px solid #1e293b; border-radius:10px; background:rgba(17,24,39,0.7);">
-        <div style="display:flex; align-items:center; gap:14px;">
-            <span style="font-size:10px; color:#94a3b8; text-transform:uppercase; letter-spacing:1.8px; font-weight:600;">
-                Volume-Weighted Avg Strike
-            </span>
-            <span style="font-family:'JetBrains Mono',monospace; font-size:26px; font-weight:800; color:#ffffff;">
-                {vwas:,.0f}
-            </span>
-        </div>
-        <div style="display:flex; align-items:center; gap:10px;">
-            <span style="font-family:'JetBrains Mono',monospace; font-size:14px; font-weight:700; color:{vwas_clr};">
-                {vwas_arrow} {abs(vwas_diff):,.1f} pts {vwas_dir} spot
-            </span>
-            <span style="font-size:11px; color:#64748b;">
-                (money flow bias)
-            </span>
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -878,42 +718,10 @@ try:
         strat_choice = st.selectbox("Select Strategy", ["Iron Condor", "Short Straddle", "Iron Butterfly", "Bull Put Spread", "Bear Call Spread"])
 
         def get_ltp(strike):
-            """
-            Look up CE & PE LTP for a strike with 3-tier fallback:
-            1. Live LTP from batch API call (already fetched at load time)
-            2. Chain DataFrame LTP
-            3. Black-Scholes theoretical price (last resort, marked with '(theo)')
-            """
-            ce_ltp = live_ltp_map.get((strike, "CE"), 0.0)
-            pe_ltp = live_ltp_map.get((strike, "PE"), 0.0)
-
-            # Fallback to chain DataFrame
-            if ce_ltp == 0 or pe_ltp == 0:
-                m = df[df["Strike"] == strike]
-                if not m.empty:
-                    if ce_ltp == 0:
-                        ce_ltp = float(m.iloc[0]["CE LTP"])
-                    if pe_ltp == 0:
-                        pe_ltp = float(m.iloc[0]["PE LTP"])
-
-            # Last resort: BS theoretical price
-            if ce_ltp == 0:
-                ce_ltp = bs_greeks(spot_price, strike, tte_years, risk_free_rate, iv_override, "CE")["price"]
-            if pe_ltp == 0:
-                pe_ltp = bs_greeks(spot_price, strike, tte_years, risk_free_rate, iv_override, "PE")["price"]
-
-            return ce_ltp, pe_ltp
-
-        def price_source_label(strike, opt_type):
-            """Returns a label indicating price source."""
-            if live_ltp_map.get((strike, opt_type), 0) > 0:
-                return ""  # Live — no label needed
             m = df[df["Strike"] == strike]
             if not m.empty:
-                col = "CE LTP" if opt_type == "CE" else "PE LTP"
-                if float(m.iloc[0][col]) > 0:
-                    return ""  # Chain — no label needed
-            return " <span style='font-size:10px; color:#94a3b8;'>(theo)</span>"
+                return float(m.iloc[0]["CE LTP"]), float(m.iloc[0]["PE LTP"])
+            return 0.0, 0.0
 
         legs = []
 
@@ -934,16 +742,16 @@ try:
             <div class="strat-card">
                 <div class="strat-title" style="color:#3b82f6;">📊 Iron Condor</div>
                 <div class="strat-leg">
-                    BUY 1× <b>{ic_buy_put} PE</b> @ ₹{p_buy_pe:.2f}{price_source_label(ic_buy_put, "PE")}<br>
-                    SELL 1× <b>{ic_sell_put} PE</b> @ ₹{p_sell_pe:.2f}{price_source_label(ic_sell_put, "PE")}<br>
-                    SELL 1× <b>{ic_sell_call} CE</b> @ ₹{c_sell_ce:.2f}{price_source_label(ic_sell_call, "CE")}<br>
-                    BUY 1× <b>{ic_buy_call} CE</b> @ ₹{c_buy_ce:.2f}{price_source_label(ic_buy_call, "CE")}
+                    BUY 1× <b>{ic_buy_put} PE</b> @ ₹{p_buy_pe:.2f}<br>
+                    SELL 1× <b>{ic_sell_put} PE</b> @ ₹{p_sell_pe:.2f}<br>
+                    SELL 1× <b>{ic_sell_call} CE</b> @ ₹{c_sell_ce:.2f}<br>
+                    BUY 1× <b>{ic_buy_call} CE</b> @ ₹{c_buy_ce:.2f}
                 </div>
                 <div class="strat-profit" style="color:#4ade80;">
                     💰 Net Credit: ₹{net:,.2f}/lot &nbsp;(₹{net*lot_size:,.0f} total)
                 </div>
-                <div style="color:#fca5a5; font-size:14px; margin-top:6px; font-weight:700;">
-                    ⚠️ Max Risk: ₹{max_risk:,.2f}/lot &nbsp;(₹{max_risk*lot_size:,.0f} total)
+                <div style="color:#f87171; font-size:13px; margin-top:4px;">
+                    Max Risk: ₹{max_risk:,.2f}/lot &nbsp;(₹{max_risk*lot_size:,.0f} total)
                 </div>
             </div>
             """, unsafe_allow_html=True)
@@ -961,13 +769,13 @@ try:
             <div class="strat-card">
                 <div class="strat-title" style="color:#f59e0b;">🔥 Short Straddle</div>
                 <div class="strat-leg">
-                    SELL 1× <b>{atm_strike} CE</b> @ ₹{c_atm:.2f}{price_source_label(atm_strike, "CE")}<br>
-                    SELL 1× <b>{atm_strike} PE</b> @ ₹{p_atm:.2f}{price_source_label(atm_strike, "PE")}
+                    SELL 1× <b>{atm_strike} CE</b> @ ₹{c_atm:.2f}<br>
+                    SELL 1× <b>{atm_strike} PE</b> @ ₹{p_atm:.2f}
                 </div>
                 <div class="strat-profit" style="color:#4ade80;">
                     💰 Net Credit: ₹{net:,.2f}/lot &nbsp;(₹{net*lot_size:,.0f} total)
                 </div>
-                <div style="font-size:14px; color:#e2e8f0; margin-top:6px; font-weight:600;">
+                <div style="font-size:13px; color:#94a3b8; margin-top:4px;">
                     Breakevens: ₹{lower_be:,.0f} – ₹{upper_be:,.0f} &nbsp;⚠️ Unlimited risk
                 </div>
             </div>
@@ -988,10 +796,10 @@ try:
             <div class="strat-card">
                 <div class="strat-title" style="color:#8b5cf6;">🦋 Iron Butterfly</div>
                 <div class="strat-leg">
-                    BUY 1× <b>{ic_buy_put} PE</b> @ ₹{p_buy_pe:.2f}{price_source_label(ic_buy_put, "PE")}<br>
-                    SELL 1× <b>{atm_strike} PE</b> @ ₹{p_atm:.2f}{price_source_label(atm_strike, "PE")}<br>
-                    SELL 1× <b>{atm_strike} CE</b> @ ₹{c_atm:.2f}{price_source_label(atm_strike, "CE")}<br>
-                    BUY 1× <b>{ic_buy_call} CE</b> @ ₹{c_buy_ce:.2f}{price_source_label(ic_buy_call, "CE")}
+                    BUY 1× <b>{ic_buy_put} PE</b> @ ₹{p_buy_pe:.2f}<br>
+                    SELL 1× <b>{atm_strike} PE</b> @ ₹{p_atm:.2f}<br>
+                    SELL 1× <b>{atm_strike} CE</b> @ ₹{c_atm:.2f}<br>
+                    BUY 1× <b>{ic_buy_call} CE</b> @ ₹{c_buy_ce:.2f}
                 </div>
                 <div class="strat-profit" style="color:#4ade80;">
                     💰 Net Credit: ₹{net:,.2f}/lot &nbsp;(₹{net*lot_size:,.0f} total)
@@ -1014,14 +822,14 @@ try:
             <div class="strat-card">
                 <div class="strat-title" style="color:#22c55e;">📈 Bull Put Spread</div>
                 <div class="strat-leg">
-                    SELL 1× <b>{sell_strike} PE</b> @ ₹{p_sell:.2f}{price_source_label(sell_strike, "PE")}<br>
-                    BUY 1× <b>{buy_strike} PE</b> @ ₹{p_buy:.2f}{price_source_label(buy_strike, "PE")}
+                    SELL 1× <b>{sell_strike} PE</b> @ ₹{p_sell:.2f}<br>
+                    BUY 1× <b>{buy_strike} PE</b> @ ₹{p_buy:.2f}
                 </div>
                 <div class="strat-profit" style="color:#4ade80;">
                     💰 Net Credit: ₹{net:,.2f}/lot &nbsp;(₹{net*lot_size:,.0f} total)
                 </div>
-                <div style="color:#fca5a5; font-size:14px; margin-top:6px; font-weight:700;">
-                    ⚠️ Max Risk: ₹{max_risk:,.2f}/lot
+                <div style="color:#f87171; font-size:13px; margin-top:4px;">
+                    Max Risk: ₹{max_risk:,.2f}/lot
                 </div>
             </div>
             """, unsafe_allow_html=True)
@@ -1041,242 +849,77 @@ try:
             <div class="strat-card">
                 <div class="strat-title" style="color:#ef4444;">📉 Bear Call Spread</div>
                 <div class="strat-leg">
-                    SELL 1× <b>{sell_strike} CE</b> @ ₹{c_sell:.2f}{price_source_label(sell_strike, "CE")}<br>
-                    BUY 1× <b>{buy_strike} CE</b> @ ₹{c_buy:.2f}{price_source_label(buy_strike, "CE")}
+                    SELL 1× <b>{sell_strike} CE</b> @ ₹{c_sell:.2f}<br>
+                    BUY 1× <b>{buy_strike} CE</b> @ ₹{c_buy:.2f}
                 </div>
                 <div class="strat-profit" style="color:#4ade80;">
                     💰 Net Credit: ₹{net:,.2f}/lot &nbsp;(₹{net*lot_size:,.0f} total)
                 </div>
-                <div style="color:#fca5a5; font-size:14px; margin-top:6px; font-weight:700;">
-                    ⚠️ Max Risk: ₹{max_risk:,.2f}/lot
+                <div style="color:#f87171; font-size:13px; margin-top:4px;">
+                    Max Risk: ₹{max_risk:,.2f}/lot
                 </div>
             </div>
             """, unsafe_allow_html=True)
 
         # ── P&L Heatmap ──
         if legs:
-            st.markdown("#### 🗺️ P&L Heatmap — What You Make or Lose")
-            st.caption("Each cell shows your total profit (green) or loss (red) in ₹, based on where the index lands (columns) and how many days remain until expiry (rows). Hover any cell for details.")
+            st.markdown("#### 🗺️ P&L Heatmap (Spot × Days to Expiry)")
+            spot_arr, dte_arr, pnl_mat = compute_pnl_heatmap(legs, lot_size, spot_price, diff)
 
-            spot_arr, dte_arr, pnl_mat = compute_pnl_heatmap(legs, lot_size, spot_price, diff, iv_override)
-
-            # Format labels
-            spot_labels = [f"{int(s):,}" for s in spot_arr]
-            dte_labels = [f"{int(d)}d left" if d > 0 else "Expiry Day" for d in dte_arr]
-
-            # Smart text: show ₹ values in K for large numbers
-            def fmt_cell(v):
-                v = int(round(v))
-                if abs(v) >= 1000:
-                    return f"₹{v/1000:+.1f}K"
-                return f"₹{v:+,}"
-
-            text_mat = [[fmt_cell(pnl_mat[i][j]) for j in range(len(spot_arr))] for i in range(len(dte_arr))]
-
-            # Color: red for loss, green for profit, dark neutral at zero
+            # Custom red-white-green colorscale
             colorscale = [
-                [0.0,  "#991b1b"],   # deep red — max loss
-                [0.3,  "#ef4444"],   # red
-                [0.45, "#fca5a5"],   # light red
-                [0.5,  "#1e293b"],   # dark neutral — breakeven
-                [0.55, "#86efac"],   # light green
-                [0.7,  "#22c55e"],   # green
-                [1.0,  "#15803d"],   # deep green — max profit
+                [0, "#dc2626"],
+                [0.35, "#fca5a5"],
+                [0.5, "#1e293b"],
+                [0.65, "#86efac"],
+                [1, "#16a34a"],
             ]
 
             fig_hm = go.Figure(data=go.Heatmap(
                 z=pnl_mat,
-                x=spot_labels,
-                y=dte_labels,
+                x=np.round(spot_arr, 0),
+                y=[f"DTE {int(d)}" for d in dte_arr],
                 colorscale=colorscale,
                 zmid=0,
-                text=text_mat,
+                text=np.round(pnl_mat, 0).astype(int),
                 texttemplate="%{text}",
-                textfont=dict(size=11, family="JetBrains Mono, monospace"),
-                hovertemplate=(
-                    "<b>If index at %{x}</b><br>"
-                    "With %{y}<br>"
-                    "Your P&L: <b>₹%{z:,.0f}</b>"
-                    "<extra></extra>"
-                ),
-                colorbar=dict(
-                    title=dict(text="P&L (₹)", font=dict(size=11)),
-                    tickformat=",",
-                    tickprefix="₹",
-                    len=0.9,
-                ),
-                xgap=2, ygap=2,
+                textfont=dict(size=9),
+                hovertemplate="Spot: %{x}<br>%{y}<br>P&L: ₹%{z:,.0f}<extra></extra>",
+                colorbar=dict(title="P&L (₹)", tickformat=","),
             ))
-
-            fig_hm.update_layout(
-                template="plotly_dark",
-                paper_bgcolor="rgba(0,0,0,0)",
-                plot_bgcolor="rgba(17,24,39,0.6)",
-                font=dict(family="Inter, sans-serif", size=11, color="#94a3b8"),
-                margin=dict(l=50, r=30, t=40, b=40),
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, font=dict(size=10)),
-                height=380,
-                title=dict(text=f"{strat_choice} — {lot_size} lot size", font=dict(size=14)),
-                xaxis=dict(
-                    title="Index Level ➜",
-                    tickangle=-45,
-                    gridcolor="rgba(30,41,59,0.4)",
-                    side="bottom",
-                    zeroline=False,
-                ),
-                yaxis=dict(
-                    title="",
-                    gridcolor="rgba(30,41,59,0.4)",
-                    autorange="reversed",
-                    zeroline=False,
-                ),
-            )
-            # Mark current spot on categorical axis
-            current_label = f"{int(round(spot_price / diff) * diff):,}"
-            if current_label in spot_labels:
-                idx = spot_labels.index(current_label)
-                fig_hm.add_shape(
-                    type="line", x0=idx, x1=idx, y0=-0.5, y1=len(dte_arr)-0.5,
-                    xref="x", yref="y",
-                    line=dict(color="#fbbf24", width=2.5, dash="solid"),
-                )
-                fig_hm.add_annotation(
-                    x=idx, y=-0.5, xref="x", yref="y",
-                    text="▼ You Are Here", showarrow=False,
-                    font=dict(size=11, color="#fbbf24", family="Inter"),
-                    yshift=-16,
-                )
+            fig_hm.update_layout(**PLOTLY_LAYOUT, height=350,
+                title=dict(text=f"{strat_choice} P&L — {lot_size} lot", font=dict(size=13)),
+                xaxis_title="Spot Price", yaxis_title="")
+            fig_hm.add_vline(x=spot_price, line=dict(color="#f1f5f9", width=1.5, dash="dash"),
+                             annotation_text="Current", annotation_position="top")
             st.plotly_chart(fig_hm, use_container_width=True)
 
-            # ── Payoff at Expiry — simplified ──
-            st.markdown("#### 📐 Payoff at Expiry — Your Profit/Loss If You Hold Until End")
-            st.caption("This shows your final P&L based on where the index closes on expiry day. The flat green zone in the middle is your 'safe zone' where you keep the premium collected.")
-
-            expiry_pnl = pnl_mat[np.where(dte_arr == 0)[0][0]] if 0 in dte_arr else pnl_mat[0]
-
-            # Check if all zeros (premiums were 0)
-            has_real_data = np.any(expiry_pnl != 0)
-
-            if not has_real_data:
-                st.warning(
-                    "⚠️ All strategy leg premiums are ₹0.00 — this usually means the market is closed "
-                    "or the selected strikes don't have active quotes. The payoff chart will appear flat. "
-                    "Try again during market hours (9:15 AM – 3:30 PM IST)."
-                )
-
+            # Payoff at expiry line chart
+            st.markdown("#### 📐 Payoff at Expiry")
+            expiry_pnl = pnl_mat[0]  # DTE 0 row
             fig_payoff = go.Figure()
-
-            # Profit zone (green fill above zero)
-            profit_y = np.where(expiry_pnl >= 0, expiry_pnl, 0)
+            # Color fill: green above 0, red below
             fig_payoff.add_trace(go.Scatter(
-                x=spot_arr, y=profit_y, mode="lines",
+                x=spot_arr, y=expiry_pnl, mode="lines",
+                line=dict(color="#e2e8f0", width=2), name="P&L",
+                fill="tozeroy",
+                fillcolor="rgba(34,197,94,0.15)",
+            ))
+            # Overlay red below zero
+            neg_pnl = np.where(expiry_pnl < 0, expiry_pnl, 0)
+            fig_payoff.add_trace(go.Scatter(
+                x=spot_arr, y=neg_pnl, mode="lines",
                 line=dict(color="rgba(0,0,0,0)", width=0),
-                fill="tozeroy", fillcolor="rgba(34,197,94,0.25)",
-                name="Profit Zone", showlegend=True,
+                fill="tozeroy", fillcolor="rgba(239,68,68,0.15)",
+                showlegend=False,
             ))
-
-            # Loss zone (red fill below zero)
-            loss_y = np.where(expiry_pnl <= 0, expiry_pnl, 0)
-            fig_payoff.add_trace(go.Scatter(
-                x=spot_arr, y=loss_y, mode="lines",
-                line=dict(color="rgba(0,0,0,0)", width=0),
-                fill="tozeroy", fillcolor="rgba(239,68,68,0.25)",
-                name="Loss Zone", showlegend=True,
-            ))
-
-            # Main P&L line
-            fig_payoff.add_trace(go.Scatter(
-                x=spot_arr, y=expiry_pnl, mode="lines+markers",
-                line=dict(color="#f1f5f9", width=2.5),
-                marker=dict(size=5, color="#f1f5f9"),
-                name="Your P&L",
-                hovertemplate="Index at %{x:,.0f}<br>P&L: <b>₹%{y:,.0f}</b><extra></extra>",
-            ))
-
-            # Breakeven line
-            fig_payoff.add_hline(y=0, line=dict(color="#fbbf24", width=1.5, dash="dash"),
-                                 annotation_text="Breakeven", annotation_position="bottom right",
-                                 annotation=dict(font=dict(color="#fbbf24", size=10)))
-
-            # Current spot marker
-            fig_payoff.add_vline(x=spot_price, line=dict(color="#3b82f6", dash="dash", width=1.5),
-                                 annotation_text="Current Spot",
-                                 annotation=dict(font=dict(color="#60a5fa", size=10)))
-
-            # Mark max profit and max loss
-            max_p = np.max(expiry_pnl)
-            max_l = np.min(expiry_pnl)
-            if max_p > 0:
-                best_spot = spot_arr[np.argmax(expiry_pnl)]
-                fig_payoff.add_annotation(
-                    x=best_spot, y=max_p,
-                    text=f"Max Profit ₹{max_p:,.0f}",
-                    showarrow=True, arrowhead=2, arrowcolor="#4ade80",
-                    font=dict(color="#4ade80", size=11, family="JetBrains Mono"),
-                    bgcolor="rgba(17,24,39,0.8)", bordercolor="#4ade80", borderwidth=1,
-                )
-            if max_l < 0:
-                worst_spot = spot_arr[np.argmin(expiry_pnl)]
-                fig_payoff.add_annotation(
-                    x=worst_spot, y=max_l,
-                    text=f"Max Loss ₹{max_l:,.0f}",
-                    showarrow=True, arrowhead=2, arrowcolor="#f87171",
-                    font=dict(color="#f87171", size=11, family="JetBrains Mono"),
-                    bgcolor="rgba(17,24,39,0.8)", bordercolor="#f87171", borderwidth=1,
-                )
-
-            fig_payoff.update_layout(
-                template="plotly_dark",
-                paper_bgcolor="rgba(0,0,0,0)",
-                plot_bgcolor="rgba(17,24,39,0.6)",
-                font=dict(family="Inter, sans-serif", size=11, color="#94a3b8"),
-                margin=dict(l=50, r=30, t=40, b=40),
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, font=dict(size=10)),
-                height=340,
-                title=dict(text="What Happens on Expiry Day", font=dict(size=14)),
-                xaxis=dict(title="Where the Index Closes ➜", tickformat=",", gridcolor="rgba(30,41,59,0.6)", zeroline=False),
-                yaxis=dict(title="Your Profit / Loss (₹)", tickprefix="₹", tickformat=",", gridcolor="rgba(30,41,59,0.6)", zeroline=False),
-            )
+            fig_payoff.add_hline(y=0, line=dict(color="#475569", width=1))
+            fig_payoff.add_vline(x=spot_price, line=dict(color="#3b82f6", dash="dash", width=1),
+                                 annotation_text="Spot")
+            fig_payoff.update_layout(**PLOTLY_LAYOUT, height=280,
+                title=dict(text="Expiry Payoff Profile", font=dict(size=13)),
+                xaxis_title="Spot at Expiry", yaxis_title="P&L (₹)")
             st.plotly_chart(fig_payoff, use_container_width=True)
-
-            # ── Quick Summary Box ──
-            if has_real_data:
-                net_credit = sum(
-                    leg["premium"] * (1 if leg["action"] == "SELL" else -1)
-                    for leg in legs
-                )
-                net_credit_total = net_credit * lot_size
-
-                summary_color = "#4ade80" if net_credit > 0 else "#f87171"
-                st.markdown(f"""
-                <div style="border:1px solid #1e293b; border-radius:10px; padding:16px; margin:10px 0;
-                            background:rgba(17,24,39,0.6); display:flex; flex-wrap:wrap; gap:24px; align-items:center;">
-                    <div>
-                        <div style="font-size:10px; color:#64748b; text-transform:uppercase; letter-spacing:1.5px;">You Collect</div>
-                        <div style="font-size:22px; font-weight:800; color:{summary_color}; font-family:'JetBrains Mono',monospace;">
-                            ₹{net_credit_total:,.0f}
-                        </div>
-                    </div>
-                    <div>
-                        <div style="font-size:10px; color:#64748b; text-transform:uppercase; letter-spacing:1.5px;">Best Case</div>
-                        <div style="font-size:22px; font-weight:800; color:#4ade80; font-family:'JetBrains Mono',monospace;">
-                            ₹{max_p:,.0f}
-                        </div>
-                    </div>
-                    <div>
-                        <div style="font-size:10px; color:#64748b; text-transform:uppercase; letter-spacing:1.5px;">Worst Case</div>
-                        <div style="font-size:22px; font-weight:800; color:#f87171; font-family:'JetBrains Mono',monospace;">
-                            ₹{max_l:,.0f}
-                        </div>
-                    </div>
-                    <div>
-                        <div style="font-size:10px; color:#64748b; text-transform:uppercase; letter-spacing:1.5px;">Risk:Reward</div>
-                        <div style="font-size:22px; font-weight:800; color:#e2e8f0; font-family:'JetBrains Mono',monospace;">
-                            1 : {abs(max_p/max_l):.1f}
-                        </div>
-                    </div>
-                </div>
-                """, unsafe_allow_html=True) if max_l != 0 else None
 
     # ──────────────────────────────────
     #  TAB 4: CHARTS
@@ -1364,6 +1007,23 @@ try:
             title=dict(text="Cumulative OI Build-up", font=dict(size=13)),
             xaxis_title="Strike", yaxis_title="Cumulative OI")
         st.plotly_chart(fig_cum, use_container_width=True)
+
+        # Volume-Weighted Average Strike
+        total_vol = df["CE Vol"].sum() + df["PE Vol"].sum()
+        if total_vol > 0:
+            vwas = ((df["Strike"] * (df["CE Vol"] + df["PE Vol"])).sum()) / total_vol
+            st.markdown(f"""
+            <div style="text-align:center; padding:10px; margin:8px 0;
+                        border:1px solid #1e293b; border-radius:8px; background:rgba(17,24,39,0.5);">
+                <span style="font-size:11px; color:#64748b; text-transform:uppercase; letter-spacing:1.5px;">
+                    Volume-Weighted Avg Strike
+                </span><br>
+                <span style="font-family:'JetBrains Mono',monospace; font-size:24px; font-weight:700; color:#f59e0b;">
+                    {vwas:,.1f}
+                </span>
+                <span style="font-size:12px; color:#64748b;"> &nbsp;(where the money flows)</span>
+            </div>
+            """, unsafe_allow_html=True)
 
     # ═══════════════════════════════════════════════
     #  FOOTER
