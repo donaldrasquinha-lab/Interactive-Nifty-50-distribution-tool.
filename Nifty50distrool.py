@@ -61,9 +61,9 @@ st.title("⚡ Upstox Live Multi-Index OI & Statistical Dashboard")
 
 # ── Index Definitions ──
 INDICES = {
-    "NIFTY 50": {"key": "NSE_INDEX|Nifty_50", "symbol": "NIFTY", "diff": 50, "default_spot": 23800},
-    "BANK NIFTY": {"key": "NSE_INDEX|Nifty_Bank", "symbol": "BANKNIFTY", "diff": 100, "default_spot": 51200},
-    "FINNIFTY": {"key": "NSE_INDEX|FINNIFTY", "symbol": "FINNIFTY", "diff": 50, "default_spot": 22400},
+    "NIFTY 50": {"key": "NSE_INDEX|Nifty_50", "lot_size": 50, "diff": 50, "default_spot": 23800},
+    "BANK NIFTY": {"key": "NSE_INDEX|Nifty_Bank", "lot_size": 15, "diff": 100, "default_spot": 51200},
+    "FINNIFTY": {"key": "NSE_INDEX|FINNIFTY", "lot_size": 40, "diff": 50, "default_spot": 22400},
     "MIDCAP NIFTY": {"key": "NSE_INDEX|NIFTY MID SELECT", "symbol": "MIDCPNIFTY", "diff": 25, "default_spot": 12100},
 }
 
@@ -89,7 +89,7 @@ class UpstoxClient:
         """Generates target expiry array by naturally projecting next close calendar Thursdays."""
         today = datetime.now()
         expiries = []
-        for i in range(4): # Project 4 upcoming weekly expiries
+        for i in range(4): 
             days_until_thursday = (3 - today.weekday() + (i * 7)) % (7 + (i * 7))
             if days_until_thursday == 0 and today.hour >= 16:
                 days_until_thursday += 7
@@ -105,94 +105,15 @@ class UpstoxClient:
             return []
         return r.json().get("data", [])
 
-    def get_historical_candles(self, instrument_key: str, interval: str = "1d", days: int = 30):
-        to_date = datetime.now().strftime("%Y-%m-%d")
-        from_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
-        url = f"{self.BASE}/historical-candle/{instrument_key}/{interval}/{to_date}/{from_date}"
-        r = requests.get(url, headers=self.headers, timeout=10)
-        if r.status_code != 200:
-            return pd.DataFrame()
-        data = r.json()
-        candles = data.get("data", {}).get("candles", [])
-        if not candles:
-            return pd.DataFrame()
-        rows = []
-        for c in candles:
-            rows.append({
-                "timestamp": c[0], "open": c[1], "high": c[2],
-                "low": c[3], "close": c[4], "volume": c[5],
-            })
-        cdf = pd.DataFrame(rows).sort_values("timestamp").reset_index(drop=True)
-        return cdf
-
-def compute_adx(candles_df: pd.DataFrame, period: int = 14):
-    """Compute ADX, +DI, -DI from OHLC candle data using Wilder's smoothing."""
-    if candles_df.empty or len(candles_df) < period * 2:
-        return {"adx": 22.5, "plus_di": 24.1, "minus_di": 19.4}
-
-    df = candles_df.copy()
-    df["prev_high"] = df["high"].shift(1)
-    df["prev_low"] = df["low"].shift(1)
-    df["prev_close"] = df["close"].shift(1)
-
-    df["tr"] = df.apply(lambda r: max(
-        r["high"] - r["low"],
-        abs(r["high"] - r["prev_close"]) if pd.notna(r["prev_close"]) else 0,
-        abs(r["low"] - r["prev_close"]) if pd.notna(r["prev_close"]) else 0,
-    ), axis=1)
-
-    df["+dm"] = df.apply(lambda r: max(r["high"] - r["prev_high"], 0)
-                         if pd.notna(r["prev_high"]) and (r["high"] - r["prev_high"]) > (r["prev_low"] - r["low"])
-                         else 0, axis=1)
-    df["-dm"] = df.apply(lambda r: max(r["prev_low"] - r["low"], 0)
-                         if pd.notna(r["prev_low"]) and (r["prev_low"] - r["low"]) > (r["high"] - r["prev_high"])
-                         else 0, axis=1)
-
-    df = df.iloc[1:].reset_index(drop=True)
-
-    tr_smooth = [df["tr"].iloc[:period].sum()]
-    pdm_smooth = [df["+dm"].iloc[:period].sum()]
-    ndm_smooth = [df["-dm"].iloc[:period].sum()]
-
-    for i in range(period, len(df)):
-        tr_smooth.append(tr_smooth[-1] - (tr_smooth[-1] / period) + df["tr"].iloc[i])
-        pdm_smooth.append(pdm_smooth[-1] - (pdm_smooth[-1] / period) + df["+dm"].iloc[i])
-        ndm_smooth.append(ndm_smooth[-1] - (ndm_smooth[-1] / period) + df["-dm"].iloc[i])
-
-    plus_di_list = []
-    minus_di_list = []
-    dx_list = []
-
-    for i in range(len(tr_smooth)):
-        tr_val = tr_smooth[i]
-        pdi = (pdm_smooth[i] / tr_val * 100) if tr_val > 0 else 0
-        ndi = (ndm_smooth[i] / tr_val * 100) if tr_val > 0 else 0
-        plus_di_list.append(pdi)
-        minus_di_list.append(ndi)
-        denom = pdi + ndi
-        dx = (abs(pdi - ndi) / denom * 100) if denom > 0 else 0
-        dx_list.append(dx)
-
-    adx_series = [np.mean(dx_list[:period])]
-    for i in range(period, len(dx_list)):
-        adx_series.append((adx_series[-1] * (period - 1) + dx_list[i]) / period)
-
-    return {
-        "adx": adx_series[-1],
-        "plus_di": plus_di_list[-1],
-        "minus_di": minus_di_list[-1]
-    }
-
 # ── Sidebar Setup ──
 st.sidebar.markdown('<div class="sidebar-header">UPSTOX Engine</div>', unsafe_allow_html=True)
 st.sidebar.markdown('<div class="sidebar-title">OI Analyzer Pro</div>', unsafe_allow_html=True)
 st.sidebar.markdown("---")
 
-api_token = st.sidebar.text_input("Upstox Access Token", type="password", help="Paste your active Bearer access token here.")
+api_token = st.sidebar.text_input("Upstox Access Token (Bearer)", type="password", help="Paste your active Bearer access token here.")
 selected_idx_label = st.sidebar.selectbox("Select Target Asset Index:", list(INDICES.keys()))
 
-# FIXED: Completed the parameter assignments and linked UI logic controls below
-lot_size = INDICES[selected_idx_label]["lot_size" if "lot_size" in INDICES[selected_idx_label] else "diff"] # Fallback mapping safety keys
+lot_size = INDICES[selected_idx_label]["lot_size"]
 instrument_key = INDICES[selected_idx_label]["key"]
 oi_step = INDICES[selected_idx_label]["diff"]
 
@@ -202,21 +123,25 @@ spot_price = INDICES[selected_idx_label]["default_spot"]
 is_live = False
 raw_data = []
 
-# Fetch Expiries 
+# Fetch Expiries Array
 expiries_list = client.get_expiries(instrument_key)
 selected_expiry = st.sidebar.selectbox("Select Expiry Date:", expiries_list)
 
+# FIXED CORE SEQUENCE: Moved slider inputs up so variables are registered in memory before data handlers use them
 st.sidebar.header("🔧 Alpha System Multipliers")
 iv_percent = st.sidebar.slider("Implied Volatility (IV %)", 5.0, 40.0, 12.0, 0.5) / 100
-days_to_expiry = st.sidebar.number_input("Days to Expiry (DTE Scalar)", 1, 30, 7)
+today_cal = datetime.now()
+days_until_thursday_cal = (3 - today_cal.weekday()) % 7
+if days_until_thursday_cal == 0 and today_cal.hour >= 16:
+    days_until_thursday_cal = 7
+days_to_expiry = st.sidebar.number_input("Days to Expiry (DTE Scalar)", 1, 30, int(max(1, days_until_thursday_cal)))
 show_adjustment = st.sidebar.checkbox("Overlay Recommended Adjustment Leg", value=True)
 
-# AUTOMATED TICK LOOP CONTROLS
-st.sidebar.header("⏱️ Live Ticker Automations")
+st.sidebar.header("⏱️ Live Automations")
 auto_refresh = st.sidebar.checkbox("Enable Real-Time Streaming (Auto Rerun)", value=False)
 refresh_interval = st.sidebar.slider("Refresh Data Every (Seconds)", min_value=2, max_value=30, value=5)
 
-# Setup Baseline Fallback Engine Estimates
+# ── 3. Data Processing Matrix Ingestion Layer ──
 time_factor = np.sqrt(days_to_expiry / 365)
 expected_move = spot_price * iv_percent * time_factor
 atm_premium = int(max(25.0, round(expected_move * 0.4)))
@@ -226,14 +151,12 @@ hedge_premium = int(max(2.0, round(oi_wall_premium * 0.35)))
 atm_strike = int(round(spot_price / oi_step) * oi_step)
 oi_wall_strike = atm_strike + oi_step
 
-# Baseline Multipliers (Alpha Logic Safe Placeholders)
 live_pcr = 0.95
 oi_support = atm_strike - oi_step
 oi_resistance = atm_strike + oi_step
 money_velocity_ratio = 1.05  
 volatility_skew_index = 1.02 
 
-# ── Data Fetching Automation ──
 if api_token:
     try:
         spot_price = client.get_spot_price(instrument_key)
@@ -298,6 +221,9 @@ if api_token:
             strike_sell = oi_wall_strike
             strike_hedge = strike_sell + (strike_sell - atm_strike)
             hedge_premium = premium_lookup.get(strike_hedge, hedge_premium)
+            
+            filename_prefix = selected_idx_label.replace(" ", "_").lower()
+            pd.DataFrame(processed_records).to_csv(f"{filename_prefix}_chain_latest.csv", index=False)
     except Exception:
         pass
 
@@ -368,8 +294,8 @@ x = np.linspace(spot_price - (3 * one_sd_move), spot_price + (3 * one_sd_move), 
 
 payoff_buy = (np.maximum(x - strike_buy, 0) - atm_premium) * qty_buy
 payoff_sell = (oi_wall_premium - np.maximum(x - strike_sell, 0)) * qty_sell
-y_initial = (payoff_buy + payoff_sell) * (50 if "50" in selected_idx_label else 15) # Dynamically capture baseline index multipliers lot size
-y_adjusted = y_initial + ((np.maximum(x - strike_hedge, 0) - hedge_premium) * qty_hedge * (50 if "50" in selected_idx_label else 15))
+y_initial = (payoff_buy + payoff_sell) * lot_size
+y_adjusted = y_initial + ((np.maximum(x - strike_hedge, 0) - hedge_premium) * qty_hedge * lot_size)
 
 lower_be = strike_buy + (atm_premium - (2 * oi_wall_premium))
 upper_be = strike_sell + ((strike_sell - strike_buy) - (atm_premium - (2 * oi_wall_premium)))
@@ -383,9 +309,9 @@ with col_left:
     fig_p.patch.set_facecolor('#ffffff')
     ax_p.set_facecolor('#f8fafc')
     ax_p.plot(x, prob_density, color='#475569', linewidth=2)
-    ax_p.fill_between(x, prob_density, 0, where=(x >= sd1_lower) & (x <= sd1_upper), facecolor='#10b981', alpha=0.2, label='68.2% (1 Standard Deviation Bounds)')
-    ax_p.fill_between(x, prob_density, 0, where=((x >= sd2_lower) & (x < sd1_lower)) | ((x > sd1_upper) & (x <= sd2_upper)), facecolor='#f59e0b', alpha=0.12, label='95.4% (2 Standard Deviation Bounds)')
-    ax_p.axvline(spot_price, color='#4f46e5', linestyle=':', linewidth=1.5, label=f'Spot valuation baseline')
+    ax_p.fill_between(x, prob_density, 0, where=(x >= sd1_lower) & (x <= sd1_upper), facecolor='#10b981', alpha=0.2, label='68.2% (1 SD)')
+    ax_p.fill_between(x, prob_density, 0, where=((x >= sd2_lower) & (x < sd1_lower)) | ((x > sd1_upper) & (x <= sd2_upper)), facecolor='#f59e0b', alpha=0.12, label='95.4% (2 SD)')
+    ax_p.axvline(spot_price, color='#4f46e5', linestyle=':', linewidth=1.5, label='Spot Line')
     ax_p.tick_params(colors='#475569', labelsize=9)
     ax_p.legend(loc="upper left", frameon=True, facecolor='#ffffff', edgecolor='#e2e8f0', labelcolor='#0f172a', fontsize=8)
     ax_p.set_xlim(x.min(), x.max())
@@ -414,7 +340,6 @@ with col_right:
     ax_t.grid(True, linestyle=":", alpha=0.3, color="#cbd5e1")
     st.pyplot(fig_t)
 
-# ── 8. Clean Table Data Recommendations ──
 st.markdown("---")
 st.subheader("📋 Executable Order Matrix & Live Recommendations")
 col_rec1, col_rec2 = st.columns(2)
@@ -424,9 +349,9 @@ with col_rec1:
     initial_data = {
         "Action": ["🟢 BUY (ATM Strike)", "🔴 SELL (OI Wall Strike)"],
         "Option Strike": [f"{strike_buy} CE", f"{strike_sell} CE"],
-        "Lots / Qty": [f"{qty_buy} Lot ({oi_step} Qty)", f"{qty_sell} Lots ({oi_step * qty_sell} Qty)"],
+        "Lots / Qty": [f"{qty_buy} Lot ({lot_size} Qty)", f"{qty_sell} Lots ({lot_size * qty_sell} Qty)"],
         "Premium (LTP)": [f"₹{int(atm_premium)}", f"₹{int(oi_wall_premium)}"],
-        "Margin Impact": [f"-₹{int(atm_premium * oi_step)}", f"+₹{int(oi_wall_premium * qty_sell * oi_step)}"]
+        "Margin Impact": [f"-₹{int(atm_premium * lot_size)}", f"+₹{int(oi_wall_premium * qty_sell * lot_size)}"]
     }
     st.table(initial_data)
 
@@ -439,13 +364,12 @@ with col_rec2:
         adj_data = {
             "Action": ["🟢 BUY (OTM Protection)"],
             "Option Strike": [f"{strike_hedge} CE"],
-            "Lots / Qty": [f"{qty_hedge} Lot ({oi_step} Qty)"],
+            "Lots / Qty": [f"{qty_hedge} Lot ({lot_size} Qty)"],
             "Premium (LTP)": [f"₹{int(hedge_premium)}"],
-            "Margin Impact": [f"-₹{int(hedge_premium * oi_step)}"]
+            "Margin Impact": [f"-₹{int(hedge_premium * lot_size)}"]
         }
         st.table(adj_data)
 
-# ── 9. Automated Streaming Rerun Controller Loops ──
 if auto_refresh:
     time.sleep(refresh_interval)
     st.rerun()
