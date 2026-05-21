@@ -215,6 +215,25 @@ class UpstoxClient:
         r.raise_for_status()
         return self._safe_json(r).get("data", [])
 
+    def get_ltp_batch(self, instrument_keys: list) -> dict:
+        """
+        Fetch LTP for up to 50 instruments in one call via /market-quote/ltp.
+        Returns {instrument_key: ltp} dict.
+        """
+        result = {}
+        # API allows comma-separated keys, max ~50 per call
+        for i in range(0, len(instrument_keys), 50):
+            batch = instrument_keys[i:i+50]
+            keys_param = ",".join(batch)
+            r = requests.get(f"{UPSTOX_BASE}/market-quote/ltp",
+                             headers=self.headers,
+                             params={"instrument_key": keys_param}, timeout=10)
+            r.raise_for_status()
+            data = self._safe_json(r).get("data", {})
+            for k, v in data.items():
+                result[k] = float(v.get("last_price", 0) or 0)
+        return result
+
     def get_historical_candles(self, instrument_key: str, interval="day", days=45) -> pd.DataFrame:
         to_d = datetime.now().strftime("%Y-%m-%d")
         from_d = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
@@ -438,8 +457,11 @@ try:
 
     atm_strike = round(spot_price / diff) * diff
 
-    # ── Build chain records ──
+    # ── Build chain records + instrument key map ──
     records = []
+    # Maps: (strike, "CE"/"PE") -> instrument_key for direct LTP fetch
+    strike_inst_map = {}
+
     for sd in chain_raw:
         sp = float(sd.get("strike_price", 0))
         if abs(sp - atm_strike) > strike_depth * diff:
@@ -448,6 +470,14 @@ try:
         pe = sd.get("put_options", {}) or {}
         ce_md = ce.get("market_data", {}) or {}
         pe_md = pe.get("market_data", {}) or {}
+
+        # Capture instrument keys for direct LTP fallback
+        ce_inst_key = ce.get("instrument_key", "")
+        pe_inst_key = pe.get("instrument_key", "")
+        if ce_inst_key:
+            strike_inst_map[(sp, "CE")] = ce_inst_key
+        if pe_inst_key:
+            strike_inst_map[(sp, "PE")] = pe_inst_key
 
         ce_oi = int(float(ce_md.get("oi", 0) or 0))
         pe_oi = int(float(pe_md.get("oi", 0) or 0))
@@ -582,6 +612,33 @@ try:
             <span class="badge badge-red">Resistance {resistance:,.0f}</span>
             <span class="badge badge-purple">Max Pain {max_pain:,.0f}</span>
             <span class="badge badge-amber">IV Pct {iv_pct:.0f}%</span>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ── VWAS Highlight Bar ──
+    vwas_diff = vwas - spot_price
+    vwas_dir = "above" if vwas_diff > 0 else "below" if vwas_diff < 0 else "at"
+    vwas_arrow = "▲" if vwas_diff > 0 else "▼" if vwas_diff < 0 else "●"
+    vwas_clr = "#4ade80" if vwas_diff > 0 else "#f87171" if vwas_diff < 0 else "#e2e8f0"
+    st.markdown(f"""
+    <div style="display:flex; align-items:center; justify-content:space-between; padding:14px 20px; margin:10px 0 14px 0;
+                border:1px solid #1e293b; border-radius:10px; background:rgba(17,24,39,0.7);">
+        <div style="display:flex; align-items:center; gap:14px;">
+            <span style="font-size:10px; color:#94a3b8; text-transform:uppercase; letter-spacing:1.8px; font-weight:600;">
+                Volume-Weighted Avg Strike
+            </span>
+            <span style="font-family:'JetBrains Mono',monospace; font-size:26px; font-weight:800; color:#ffffff;">
+                {vwas:,.0f}
+            </span>
+        </div>
+        <div style="display:flex; align-items:center; gap:10px;">
+            <span style="font-family:'JetBrains Mono',monospace; font-size:14px; font-weight:700; color:{vwas_clr};">
+                {vwas_arrow} {abs(vwas_diff):,.1f} pts {vwas_dir} spot
+            </span>
+            <span style="font-size:11px; color:#64748b;">
+                (money flow bias)
+            </span>
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -749,11 +806,51 @@ try:
 
         strat_choice = st.selectbox("Select Strategy", ["Iron Condor", "Short Straddle", "Iron Butterfly", "Bull Put Spread", "Bear Call Spread"])
 
+        # Cache for API-fetched LTPs to avoid redundant calls
+        if "fetched_ltps" not in st.session_state:
+            st.session_state.fetched_ltps = {}
+
         def get_ltp(strike):
+            """
+            Look up CE & PE LTP for a strike.
+            1. Try the chain DataFrame first.
+            2. If either is 0, fetch directly from Upstox /market-quote/ltp.
+            """
+            ce_ltp, pe_ltp = 0.0, 0.0
             m = df[df["Strike"] == strike]
             if not m.empty:
-                return float(m.iloc[0]["CE LTP"]), float(m.iloc[0]["PE LTP"])
-            return 0.0, 0.0
+                ce_ltp = float(m.iloc[0]["CE LTP"])
+                pe_ltp = float(m.iloc[0]["PE LTP"])
+
+            # Fetch from API if chain returned 0
+            keys_to_fetch = {}
+            if ce_ltp == 0 and (strike, "CE") in strike_inst_map:
+                cache_key = strike_inst_map[(strike, "CE")]
+                if cache_key in st.session_state.fetched_ltps:
+                    ce_ltp = st.session_state.fetched_ltps[cache_key]
+                else:
+                    keys_to_fetch["CE"] = cache_key
+            if pe_ltp == 0 and (strike, "PE") in strike_inst_map:
+                cache_key = strike_inst_map[(strike, "PE")]
+                if cache_key in st.session_state.fetched_ltps:
+                    pe_ltp = st.session_state.fetched_ltps[cache_key]
+                else:
+                    keys_to_fetch["PE"] = cache_key
+
+            if keys_to_fetch:
+                try:
+                    fetched = client.get_ltp_batch(list(keys_to_fetch.values()))
+                    for opt_type, inst_key in keys_to_fetch.items():
+                        price = fetched.get(inst_key, 0.0)
+                        st.session_state.fetched_ltps[inst_key] = price
+                        if opt_type == "CE":
+                            ce_ltp = price
+                        else:
+                            pe_ltp = price
+                except Exception:
+                    pass  # Keep chain values if API call fails
+
+            return ce_ltp, pe_ltp
 
         legs = []
 
