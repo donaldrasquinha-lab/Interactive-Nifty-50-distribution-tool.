@@ -58,7 +58,7 @@ spot_price = index_map[selected_index]["default_spot"]
 detected_expiry = computed_expiry_str
 is_live = False
 
-# Setup baseline mathematical defaults for option premiums
+# Setup baseline simulation/fallback defaults
 time_factor = np.sqrt(days_to_expiry / 365)
 expected_move = spot_price * iv_percent * time_factor
 atm_premium = int(max(25.0, round(expected_move * 0.4)))
@@ -67,6 +67,11 @@ hedge_premium = int(max(2.0, round(oi_wall_premium * 0.35)))
 
 atm_strike = int(round(spot_price / oi_step) * oi_step)
 oi_wall_strike = atm_strike + oi_step
+
+# Baseline Simulation KPI Variables
+live_pcr = 0.95
+oi_support = atm_strike - oi_step
+oi_resistance = atm_strike + oi_step
 
 if upstox_token:
     try:
@@ -98,17 +103,24 @@ if upstox_token:
                     raw_data = chain_res.get('data', [])
                     
                     if chain_res.get('status') == 'success' and len(raw_data) > 0:
-                        max_oi = -1
-                        best_oi_strike = atm_strike + oi_step
+                        max_call_oi = -1
+                        max_put_oi = -1
+                        total_call_oi = 0
+                        total_put_oi = 0
+                        
+                        best_call_strike = atm_strike + oi_step
+                        best_put_strike = atm_strike - oi_step
+                        
                         premium_lookup = {}
                         processed_records = []
                         timestamp_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         
                         # Detect target expiry date dynamically from payload metadata
-                        first_row = raw_data[0]
-                        sample_leg = first_row.get('call_options') or first_row.get('put_options')
-                        if sample_leg:
-                            detected_expiry = sample_leg.get('metadata', {}).get('expiry_date', computed_expiry_str)
+                        if len(raw_data) > 0:
+                            first_row = raw_data[0]
+                            sample_leg = first_row.get('call_options') or first_row.get('put_options')
+                            if sample_leg:
+                                detected_expiry = sample_leg.get('metadata', {}).get('expiry_date', computed_expiry_str)
 
                         # Loop through option chain array matrices
                         for item in raw_data:
@@ -116,12 +128,22 @@ if upstox_token:
                             ce_data = item.get('call_options', {}).get('market_data', {}) if item.get('call_options') else {}
                             pe_data = item.get('put_options', {}).get('market_data', {}) if item.get('put_options') else {}
                             
-                            current_oi = ce_data.get('oi', 0)
+                            current_call_oi = ce_data.get('oi', 0)
+                            current_put_oi = pe_data.get('oi', 0)
+                            
+                            total_call_oi += current_call_oi
+                            total_put_oi += current_put_oi
+                            
                             premium_lookup[strike] = ce_data.get('ltp', atm_premium)
                             
-                            if strike > spot_price and current_oi > max_oi:
-                                max_oi = current_oi
-                                best_oi_strike = strike
+                            # Track and isolate Support and Resistance via Highest Put/Call OI walls
+                            if strike > spot_price and current_call_oi > max_call_oi:
+                                max_call_oi = current_call_oi
+                                best_call_strike = strike
+                                
+                            if strike < spot_price and current_put_oi > max_put_oi:
+                                max_put_oi = current_put_oi
+                                best_put_strike = strike
                                 
                             processed_records.append({
                                 "Timestamp": timestamp_str,
@@ -130,13 +152,17 @@ if upstox_token:
                                 "Expiry_Date": detected_expiry,
                                 "Strike_Price": strike,
                                 "CE_LTP": ce_data.get('ltp', 0.0),
-                                "CE_OI": current_oi,
+                                "CE_OI": current_call_oi,
                                 "PE_LTP": pe_data.get('ltp', 0.0),
-                                "PE_OI": pe_data.get('oi', 0)
+                                "PE_OI": current_put_oi
                             })
                         
-                        # Map strategy coordinates using live parameters
-                        oi_wall_strike = best_oi_strike
+                        # Dynamically assign Live Calculated Metrics
+                        oi_wall_strike = best_call_strike
+                        oi_resistance = best_call_strike
+                        oi_support = best_put_strike
+                        live_pcr = round(total_put_oi / total_call_oi, 2) if total_call_oi > 0 else 1.0
+                        
                         atm_premium = premium_lookup.get(atm_strike, atm_premium)
                         oi_wall_premium = premium_lookup.get(oi_wall_strike, oi_wall_premium)
                         
@@ -144,7 +170,7 @@ if upstox_token:
                         strike_hedge = strike_sell + (strike_sell - atm_strike)
                         hedge_premium = premium_lookup.get(strike_hedge, hedge_premium)
                         
-                        # Write computational data outputs directly to system disk
+                        # Save Data Files to Disk Space
                         filename_prefix = selected_index.replace(" ", "_").lower()
                         df_export = pd.DataFrame(processed_records)
                         df_export.to_csv(f"{filename_prefix}_chain_latest.csv", index=False)
@@ -168,12 +194,27 @@ if upstox_token:
     except Exception as e:
         st.sidebar.error(f"Fallback Active. Math Model Processing Engine Enabled.")
 
+# 4. HEADER DATA STRIP METRICS PANEL
+col_m1, col_m2, col_m3, col_m4, col_m5 = st.columns(5)
+with col_m1:
+    st.metric(label=f"🎯 {selected_index} Spot", value=f"₹{spot_price:,.2f}", delta="Live Feed" if is_live else "Simulated")
+with col_m2:
+    st.metric(label="📊 Put-Call Ratio (PCR)", value=f"{live_pcr}", delta="Bullish (>1)" if live_pcr > 1 else "Bearish (<1)", delta_color="normal" if live_pcr > 1 else "inverse")
+with col_m3:
+    st.metric(label="🟢 OI Major Support", value=f"₹{oi_support:,}", delta="Put OI Wall")
+with col_m4:
+    st.metric(label="🔴 OI Major Resistance", value=f"₹{oi_resistance:,}", delta="Call OI Wall", delta_color="inverse")
+with col_m5:
+    st.metric(label="📅 Active Expiry Date", value=detected_expiry)
+
+st.markdown("---")
+
 # Define final execution geometry anchors
 strike_buy = atm_strike
 strike_sell = oi_wall_strike
 strike_hedge = strike_sell + (strike_sell - strike_buy)
 
-# 4. Mathematical Engine Setup (68-95-99.7 Rule)
+# Mathematical Engine Setup (68-95-99.7 Rule)
 one_sd_move = spot_price * iv_percent * time_factor
 sd1_lower, sd1_upper = spot_price - one_sd_move, spot_price + one_sd_move
 sd2_lower, sd2_upper = spot_price - (2 * one_sd_move), spot_price + (2 * one_sd_move)
@@ -197,12 +238,6 @@ y_adjusted = y_initial + (payoff_hedge * lot_size)
 # Strategy Break-even Boundaries
 lower_be = strike_buy + (atm_premium - (2 * oi_wall_premium))
 upper_be = strike_sell + ((strike_sell - strike_buy) - (atm_premium - (2 * oi_wall_premium)))
-
-# Display Connection Banner Status Ribbon
-if is_live:
-    st.success(f"🟢 LIVE API FEED MODE • Index: {selected_index} | Isolated Expiry: {detected_expiry}")
-else:
-    st.warning(f"🟡 SIMULATION MODE (Mathematical Model Engine) • Emulating Statistical Math Curves for {selected_index}")
 
 # 5. Dual Dashboard Plot Layout
 col_left, col_right = st.columns(2)
