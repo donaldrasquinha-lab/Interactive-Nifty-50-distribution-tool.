@@ -1240,6 +1240,7 @@ try:
             st.plotly_chart(fig_payoff, use_container_width=True)
 
             # ── Quick Summary Box ──
+try : 
             if has_real_data:
                 net_credit = sum(
                     leg["premium"] * (1 if leg["action"] == "SELL" else -1)
@@ -1282,7 +1283,8 @@ if max_l != 0:
         </div>
     </div>
     """, unsafe_allow_html=True)
-
+except Exception as e: # This closes the try block!
+    st.error(f"Error: {e}")
 
     # ──────────────────────────────────
     #  TAB 4: CHARTS
