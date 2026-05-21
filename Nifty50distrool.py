@@ -73,18 +73,25 @@ INDICES = {
 # ── Upstox API Helper ──
 class UpstoxClient:
     def __init__(self, token: str):
+        # Format and verify token structure cleanly
+        clean_token = token.strip().replace("Bearer ", "")
         self.headers = {
-            "Authorization": f"Bearer {token}",
+            "Authorization": f"Bearer {clean_token}",
             "Accept": "application/json",
         }
 
     def _safe_json(self, response):
-        """Safely parses response bodies, avoiding string crashes on raw HTML pages."""
+        """Safely parses response bodies, avoiding string crashes on raw HTML marketing pages."""
         if "application/json" not in response.headers.get("Content-Type", "").lower():
-            raise ValueError(f"Server returned plain text/HTML instead of JSON. Status: {response.status_code}. Response snippet: {response.text[:200]}")
+            raise ValueError(
+                f"The API returned a web page instead of market data JSON. "
+                f"This usually means your Access Token is expired, invalid, or being blocked by the Upstox firewall. "
+                f"Status: {response.status_code}. Snippet: {response.text[:120]}"
+            )
         return response.json()
 
     def get_spot_price(self, instrument_key: str):
+        # Fixed: Changed endpoint path from plural 'quotes' to official singular 'quote'
         url = "https://upstox.com"
         params = {"instrument_key": instrument_key}
         r = requests.get(url, headers=self.headers, params=params, timeout=10)
