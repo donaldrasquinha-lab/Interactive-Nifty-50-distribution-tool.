@@ -11,7 +11,6 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.stats import norm
 import requests
-import urllib.parse
 import json
 import pandas as pd
 from datetime import datetime, timedelta
@@ -49,11 +48,9 @@ div[data-testid="stMetric"] div[data-testid="stMetricValue"] {
 .direction-text { font-size: 28px; font-weight: 700; color: #ffffff; }
 .sentiment-text { font-size: 13px; color: #f8fafc; margin-top: 4px; }
 
-/* Strategy execution playbook blocks */
-.playbook-card {
-    background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 12px; padding: 18px; margin: 10px 0;
-}
-.playbook-title { font-size: 14px; font-weight: 700; color: #0f172a; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px; }
+/* Sidebar formatting elements */
+.sidebar-header { font-size: 11px; letter-spacing: 3px; color: #0284c7; font-weight: 600; text-transform: uppercase; }
+.sidebar-title { font-size: 20px; font-weight: 700; color: #0f172a; margin-top: 2px; }
 
 footer { visibility: hidden; }
 </style>
@@ -72,52 +69,42 @@ INDICES = {
 
 # ── Upstox API Helper ──
 class UpstoxClient:
-    def __init__(self, token: str, api_key: str):
-        clean_token = token.strip().replace("Bearer ", "")
-        # Forced inclusion of both required Upstox developer headers
+    # Explicitly defining the absolute base domain for API access routing
+    BASE = "https://api.upstox.com/v2"
+
+    def __init__(self, token: str):
         self.headers = {
-            "Authorization": f"Bearer {clean_token}",
-            "api_key": api_key.strip(),
+            "Authorization": f"Bearer {token}",
             "Accept": "application/json",
         }
 
-    def _safe_json(self, response):
-        """Safely parses response bodies, avoiding string crashes on raw HTML pages."""
-        if "application/json" not in response.headers.get("Content-Type", "").lower():
-            raise ValueError(
-                f"The API returned an HTML web page instead of market data JSON. "
-                f"This means Upstox is rejecting your combination of Access Token and API Key (Client ID). "
-                f"Status Code: {response.status_code}. Snippet: {response.text[:140]}"
-            )
-        return response.json()
-
     def get_spot_price(self, instrument_key: str):
-        url = "https://upstox.com"
-        params = {"instrument_key": instrument_key}
+        url = f"{self.BASE}/market-quote/quotes"
+        
+        # Checking compatibility by querying both parameters safely
+        params = {"instrumentKey": instrument_key, "instrument_key": instrument_key}
         r = requests.get(url, headers=self.headers, params=params, timeout=10)
         r.raise_for_status()
-        data = self._safe_json(r)
+        data = r.json()
         
+        # Extraction framework mapping with explicit fallbacks
         data_body = data.get("data", {})
         if instrument_key in data_body:
             return float(data_body[instrument_key]["last_price"])
+        
+        # Fallback tracking logic if keys return with custom casings
+        keys_list = list(data_body.keys())
+        if keys_list:
+            return float(data_body[keys_list[0]]["last_price"])
             
-        for key in data_body.keys():
-            if key.lower().replace(" ", "") == instrument_key.lower().replace(" ", ""):
-                return float(data_body[key]["last_price"])
-                
-        first_key = list(data_body.keys())
-        if first_key:
-            return float(data_body[first_key]["last_price"])
-            
-        raise ValueError(f"Symbol not found in data: {instrument_key}")
+        raise ValueError(f"Unable to parse index value for instrument key: {instrument_key}")
 
     def get_expiries(self, instrument_key: str):
-        url = "https://upstox.com"
-        params = {"instrument_key": instrument_key}
+        url = f"{self.BASE}/option/contract"
+        params = {"instrumentKey": instrument_key, "instrument_key": instrument_key}
         r = requests.get(url, headers=self.headers, params=params, timeout=10)
         r.raise_for_status()
-        data = self._safe_json(r)
+        data = r.json()
         expiries = sorted(set(
             c.get("expiry", "")[:10] if isinstance(c.get("expiry"), str) else str(c.get("expiry", ""))[:10]
             for c in data.get("data", [])
@@ -125,23 +112,26 @@ class UpstoxClient:
         return [e for e in expiries if e and e != "None"]
 
     def get_option_chain(self, instrument_key: str, expiry_date: str):
-        url = "https://upstox.com"
-        params = {"instrument_key": instrument_key, "expiry_date": expiry_date}
+        url = f"{self.BASE}/option/chain"
+        params = {
+            "instrument_key": instrument_key, 
+            "instrumentKey": instrument_key,
+            "expiry_date": expiry_date,
+            "expiryDate": expiry_date
+        }
         r = requests.get(url, headers=self.headers, params=params, timeout=10)
         r.raise_for_status()
-        data = self._safe_json(r)
-        return data.get("data", [])
+        return r.json().get("data", [])
 
     def get_historical_candles(self, instrument_key: str, interval: str = "day", days: int = 45):
+        """Fetch historical candle structure data safely mapping internal index strings."""
         to_date = datetime.now().strftime("%Y-%m-%d")
         from_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
         
-        encoded_key = urllib.parse.quote(instrument_key)
-        url = f"https://upstox.com{encoded_key}/{interval}/{to_date}/{from_date}"
-        
+        url = f"{self.BASE}/historical-candle/{instrument_key}/{interval}/{to_date}/{from_date}"
         r = requests.get(url, headers=self.headers, timeout=10)
         r.raise_for_status()
-        data = self._safe_json(r)
+        data = r.json()
         candles = data.get("data", {}).get("candles", [])
         
         if not candles:
@@ -151,13 +141,18 @@ class UpstoxClient:
         for c in candles:
             if len(c) >= 5:
                 rows.append({
-                    "timestamp": c[0], "open": float(c[1]), "high": float(c[2]), "low": float(c[3]), "close": float(c[4])
+                    "timestamp": c[0],
+                    "open": float(c[1]),
+                    "high": float(c[2]),
+                    "low": float(c[3]),
+                    "close": float(c[4])
                 })
         cdf = pd.DataFrame(rows).sort_values("timestamp").reset_index(drop=True)
         return cdf
 
 
 def compute_adx(candles_df: pd.DataFrame, period: int = 14):
+    """Compute ADX, +DI, -DI from OHLC candle data using Wilder's smoothing method."""
     if candles_df.empty or len(candles_df) < (period * 2 + 2):
         return None
 
@@ -211,11 +206,14 @@ def compute_adx(candles_df: pd.DataFrame, period: int = 14):
         adx_list.append((adx_list[-1] * (period - 1) + dx_list[i]) / period)
 
     return {
-        "adx": round(adx_list[-1], 2), "plus_di": round(plus_di_list[-1], 2), "minus_di": round(minus_di_list[-1], 2),
+        "adx": round(adx_list[-1], 2),
+        "plus_di": round(plus_di_list[-1], 2),
+        "minus_di": round(minus_di_list[-1], 2),
     }
 
 
 def black_scholes_greeks(S, K, T, r, sigma, option_type="CE"):
+    """Calculate option price, delta, gamma, theta, and vega using Black-Scholes."""
     if T <= 0 or sigma <= 0:
         return {"price": 0, "delta": 0, "gamma": 0, "theta": 0, "vega": 0}
     
@@ -238,11 +236,7 @@ def black_scholes_greeks(S, K, T, r, sigma, option_type="CE"):
 
 
 # ── Sidebar Setup ──
-st.sidebar.markdown('<div class="sidebar-header">Authentication</div>', unsafe_allow_html=True)
-api_key = st.sidebar.text_input("🔑 Upstox API Key (Client ID)", type="password", value="")
-api_token = st.sidebar.text_input("🔓 Upstox Access Token (Bearer)", type="password", value="")
-
-st.sidebar.markdown("---")
+api_token = st.sidebar.text_input("🔑 Upstox Access Token", type="password", value="")
 selected_index_name = st.sidebar.selectbox("🎯 Select Underlying Index", list(INDICES.keys()))
 
 st.sidebar.markdown("---")
@@ -255,14 +249,12 @@ st.sidebar.markdown("---")
 auto_refresh = st.sidebar.checkbox("🔄 Enable Auto-Refresh (10s Triggers)", value=False)
 
 # ── Core Engine Evaluation Loop ──
-if not api_token or not api_key:
-    st.info("💡 Please enter BOTH your **Upstox API Key (Client ID)** and **Access Token** in the sidebar console to initialize the engine pipelines.")
+if not api_token:
+    st.info("💡 Please input your Upstox API Bearer Token in the sidebar console to initialize the engine pipelines.")
 else:
     try:
-        # Initialized with both validation criteria pieces
-        client = UpstoxClient(token=api_token, api_key=api_key)
+        client = UpstoxClient(token=api_token)
         index_meta = INDICES[selected_index_name]
-        diff = index_meta["diff"]
         
         # Pull underlying execution matrix values
         spot_price = client.get_spot_price(index_meta["key"])
@@ -274,10 +266,12 @@ else:
             
         selected_expiry = st.sidebar.selectbox("📅 Expiry Window Target", expiries, index=0)
         
+        # Calculate dynamic time vectors
         expiry_dt = datetime.strptime(selected_expiry, "%Y-%m-%d").replace(hour=15, minute=30)
         time_to_expiry_days = (expiry_dt - datetime.now()).total_seconds() / (86400 * 365)
         time_to_expiry_days = max(time_to_expiry_days, 0.0001) 
         
+        # Fetch technical structure indicators with an expanded safety history lookback window
         with st.spinner("Analyzing Index Volatility Structure..."):
             candles_df = client.get_historical_candles(index_meta["key"], interval="day", days=45)
             adx_metrics = compute_adx(candles_df)
@@ -287,8 +281,11 @@ else:
             st.warning("Empty execution array returned for the target strike range matrix configuration.")
             st.stop()
 
+        # Compute dynamic rounded boundary levels 
+        diff = index_meta["diff"]
         atm_strike = round(spot_price / diff) * diff
         
+        # Process and build option chain table
         chain_records = []
         for strike_data in chain_raw:
             strike_price = float(strike_data.get("strike_price", 0))
@@ -301,6 +298,7 @@ else:
                 ce_ltp = ce.get("market_data", {}).get("ltp", 0) if ce else 0
                 pe_ltp = pe.get("market_data", {}).get("ltp", 0) if pe else 0
                 
+                # Math Greeks evaluations via engine calculators
                 ce_greeks = black_scholes_greeks(spot_price, strike_price, time_to_expiry_days, risk_free_rate, iv_override, "CE")
                 pe_greeks = black_scholes_greeks(spot_price, strike_price, time_to_expiry_days, risk_free_rate, iv_override, "PE")
                 
@@ -312,10 +310,12 @@ else:
                 
         df_chain = pd.DataFrame(chain_records).sort_values("Strike").reset_index(drop=True)
         
+        # Summary Analytics Block
         total_ce_oi = df_chain["CE OI"].sum()
         total_pe_oi = df_chain["PE OI"].sum()
         pcr = round(total_pe_oi / total_ce_oi, 2) if total_ce_oi > 0 else 0
         
+        # Trend and structural scoring setup
         sentiment = "Neutral Matrix"
         card_bg = "background: linear-gradient(135deg, #64748b, #475569);"
         if pcr >= 1.25:
@@ -339,8 +339,9 @@ else:
         if adx_metrics:
             m_col4.metric("ADX (14 Period Trend)", f"{adx_metrics['adx']}", f"DI+/DI-: {adx_metrics['plus_di']}/{adx_metrics['minus_di']}")
         else:
-            m_col4.metric("ADX (14 Period Trend)", "Processing")
+            m_col4.metric("ADX (14 Period Trend)", "Data Window Error")
 
+        # HTML Sentiment Block Rendering
         st.markdown(f"""
         <div class="direction-card" style="{card_bg}">
             <div class="score-label">AUTOMATED STRUCTURAL TREND SIGNAL</div>
@@ -363,11 +364,6 @@ else:
         p_col2.metric("🎯 Median Expected Spot", f"₹ {spot_price:,.2f}")
         p_col3.metric("1-Sigma High Bound (68.2%)", f"₹ {upper_1sigma:,.2f}")
         
-        ic_sell_put = round(lower_1sigma / diff) * diff
-        ic_sell_call = round(upper_1sigma / diff) * diff
-        ic_buy_put = ic_sell_put - diff
-        ic_buy_call = ic_sell_call + diff
-        
         fig_bell, ax_bell = plt.subplots(figsize=(12, 4.5))
         x_axis = np.linspace(spot_price - 3.5 * std_dev_price, spot_price + 3.5 * std_dev_price, 500)
         y_axis = norm.pdf(x_axis, spot_price, std_dev_price)
@@ -379,8 +375,8 @@ else:
                              color="#0284c7", alpha=0.15, label="95.4% Confidence Zone (2σ)")
         
         ax_bell.axvline(spot_price, color="#0f172a", linestyle="-", linewidth=1.5, label=f"Current Spot ({spot_price:,.1f})")
-        ax_bell.axvline(ic_sell_put, color="#e11d48", linestyle=":", linewidth=2, label=f"IC Sell Floor ({ic_sell_put})")
-        ax_bell.axvline(ic_sell_call, color="#16a34a", linestyle=":", linewidth=2, label=f"IC Sell Cap ({ic_sell_call})")
+        ax_bell.axvline(lower_1sigma, color="#ef4444", linestyle="--", linewidth=1.2)
+        ax_bell.axvline(upper_1sigma, color="#22c55e", linestyle="--", linewidth=1.2)
         
         ax_bell.set_title(f"Expiry Statistical Forecast Structure for {selected_index_name} (Target: {selected_expiry})", fontsize=11, fontweight="bold")
         ax_bell.set_xlabel("Predicted Index Settlement Price", fontsize=9)
@@ -388,43 +384,6 @@ else:
         ax_bell.legend(loc="upper right", fontsize=8)
         ax_bell.grid(True, linestyle=":", alpha=0.4)
         st.pyplot(fig_bell)
-        
-        # ── Auto Strategy Playbook Block Rendering ──
-        st.subheader("🛡️ Automated Statistical Strategy Playbook")
-        is_trending = adx_metrics and adx_metrics["adx"] > 25
-        
-        if is_trending:
-            st.warning("⚠️ High ADX Trend Detected (>25). Statistical distribution parameters have high breakout risk. Delta-neutral premium selling strategies are not recommended in this regime.")
-        else:
-            st.success("✅ Range-Bound Environment Verified (ADX <= 25). The asset is mathematically favorable for normal distribution premium harvesting.")
-            
-        strat_col1, strat_col2 = st.columns(2)
-        
-        with strat_col1:
-            st.markdown(f"""
-            <div class="playbook-card">
-                <div class="playbook-title">📊 Strategy 1: Recommended Iron Condor (Risk-Defined)</div>
-                <strong>Execution Strikes:</strong><br>
-                • Buy Protective Put: 1x <b>{ic_buy_put} PE</b><br>
-                • Sell Income Put: 1x <b>{ic_sell_put} PE</b> (Floor)<br>
-                • Sell Income Call: 1x <b>{ic_sell_call} CE</b> (Cap)<br>
-                • Buy Protective Call: 1x <b>{ic_buy_call} CE</b><br><br>
-                <em>Target: Capture premium collapse while remaining 100% hedged against tail risk breakouts.</em>
-            </div>
-            """, unsafe_allow_html=True)
-            
-        with strat_col2:
-            st.markdown(f"""
-            <div class="playbook-card">
-                <div class="playbook-title">🔥 Strategy 2: Tactical Expected Move Strangle (Max Yield)</div>
-                <strong>Execution Strikes:</strong><br>
-                • Sell Short Put Boundary: 1x <b>{ic_sell_put} PE</b><br>
-                • Sell Short Call Boundary: 1x <b>{ic_sell_call} CE</b><br><br>
-                <strong>Management Thresholds:</strong><br>
-                • Profit Take: Close position at <b>50% Max Premium Capture</b><br>
-                • Hard Stop-Loss: Exit immediately if Index Spot breaches 2-Sigma Boundary (<b>₹ {lower_2sigma:,.0f}</b> or <b>₹ {upper_2sigma:,.0f}</b>)
-            </div>
-            """, unsafe_allow_html=True)
         
         # Display Core Options Execution Table Matrix Grid Array
         st.subheader("📊 Interactive Options Chain Model & Analytical Greeks")
@@ -459,6 +418,7 @@ else:
         ax.grid(True, linestyle=":", alpha=0.6)
         st.pyplot(fig)
 
+        # Handle active refresh tracking timers
         if auto_refresh:
             time.sleep(10)
             st.rerun()
