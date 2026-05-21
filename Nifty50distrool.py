@@ -72,7 +72,6 @@ upstox_token = st.sidebar.text_input(
 
 selected_index = st.sidebar.selectbox("Target Asset Index:", ["Nifty 50", "Nifty Bank", "Financial Services"])
 
-# FIXED: Replaced invalid indices names with standard production instrument keys
 index_map = {
     "Nifty 50": {"key": "NSE_INDEX|Nifty_50", "lot_size": 50, "default_spot": 23800, "oi_step": 100},
     "Nifty Bank": {"key": "NSE_INDEX|Nifty_Bank", "lot_size": 15, "default_spot": 51200, "oi_step": 100},
@@ -159,7 +158,7 @@ if upstox_token:
                         processed_records = []
                         timestamp_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         
-                        # FIXED: Extracted dictionary level explicitly from index zero list array to remove parsing block
+                        # FIXED CRITICAL PARSING BUG: Extracted list item zero [0] safely to prevent AttributeError drops
                         first_row = raw_data[0]
                         sample_leg = first_row.get('call_options') or first_row.get('put_options')
                         if sample_leg:
@@ -221,12 +220,12 @@ if upstox_token:
                 else:
                     st.sidebar.warning(f"Option Chain API code {chain_response.status_code}. Using emulation curves.")
             else:
-                # Print message inside sidebar to identify if your daily token string contains typos
-                st.sidebar.error(f"Quote Refused. Response payload status says: {quote_response.json().get('errors',[{}])[0].get('message')}")
+                st.sidebar.error(f"Quote Refused: Check Token parameters.")
         else:
             st.sidebar.error(f"LTP Connection Denied ({quote_response.status_code}). check Token string.")
     except Exception as e:
-        st.sidebar.error(f"Parsing Fault. Reverting to emulation mode.")
+        # Prints runtime diagnostics straight onto the side panel to trace hidden dictionary changes
+        st.sidebar.error(f"Internal Data Parse Block Error: {str(e)}")
 
 if not is_live:
     atm_strike = int(round(spot_price / oi_step) * oi_step)
