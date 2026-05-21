@@ -63,18 +63,30 @@ div[data-testid="stMetric"] {
     border: 1px solid var(--border);
     border-radius: 10px;
     padding: 12px 16px;
+    overflow: visible !important;
 }
 div[data-testid="stMetric"] label {
-    color: var(--text-secondary) !important;
+    color: #cbd5e1 !important;
     font-size: 10px !important;
     letter-spacing: 1.2px;
     text-transform: uppercase;
-    font-weight: 500 !important;
+    font-weight: 600 !important;
 }
 div[data-testid="stMetric"] div[data-testid="stMetricValue"] {
     font-family: 'JetBrains Mono', monospace !important;
-    font-weight: 700 !important;
+    font-weight: 800 !important;
     font-size: 20px !important;
+    color: #ffffff !important;
+    white-space: nowrap !important;
+    overflow: visible !important;
+    text-overflow: unset !important;
+}
+div[data-testid="stMetric"] div[data-testid="stMetricDelta"] {
+    color: #94a3b8 !important;
+    font-weight: 600 !important;
+}
+div[data-testid="stMetric"] div[data-testid="stMetricDelta"] svg {
+    display: none;
 }
 
 /* Tabs */
@@ -98,14 +110,18 @@ div[data-testid="stTabs"] button[data-baseweb="tab"] {
 /* Strategy card */
 .strat-card {
     background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px;
-    padding: 18px; margin: 10px 0;
+    padding: 18px; margin: 10px 0; color: #ffffff;
 }
 .strat-title {
-    font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;
+    font-size: 14px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.5px;
     margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid var(--border);
 }
-.strat-leg { font-size: 13px; line-height: 1.8; font-family: 'JetBrains Mono', monospace; }
-.strat-profit { font-size: 17px; font-weight: 700; margin-top: 10px; }
+.strat-leg {
+    font-size: 14px; line-height: 2.0; font-family: 'JetBrains Mono', monospace;
+    color: #f1f5f9 !important; font-weight: 600;
+}
+.strat-leg b { color: #ffffff; font-weight: 800; }
+.strat-profit { font-size: 18px; font-weight: 800; margin-top: 12px; }
 
 /* Badge pills */
 .badge { display: inline-block; padding: 3px 10px; border-radius: 5px; font-size: 11px; font-weight: 600; font-family: 'JetBrains Mono', monospace; margin: 2px 3px; }
@@ -750,8 +766,8 @@ try:
                 <div class="strat-profit" style="color:#4ade80;">
                     💰 Net Credit: ₹{net:,.2f}/lot &nbsp;(₹{net*lot_size:,.0f} total)
                 </div>
-                <div style="color:#f87171; font-size:13px; margin-top:4px;">
-                    Max Risk: ₹{max_risk:,.2f}/lot &nbsp;(₹{max_risk*lot_size:,.0f} total)
+                <div style="color:#fca5a5; font-size:14px; margin-top:6px; font-weight:700;">
+                    ⚠️ Max Risk: ₹{max_risk:,.2f}/lot &nbsp;(₹{max_risk*lot_size:,.0f} total)
                 </div>
             </div>
             """, unsafe_allow_html=True)
@@ -775,7 +791,7 @@ try:
                 <div class="strat-profit" style="color:#4ade80;">
                     💰 Net Credit: ₹{net:,.2f}/lot &nbsp;(₹{net*lot_size:,.0f} total)
                 </div>
-                <div style="font-size:13px; color:#94a3b8; margin-top:4px;">
+                <div style="font-size:14px; color:#e2e8f0; margin-top:6px; font-weight:600;">
                     Breakevens: ₹{lower_be:,.0f} – ₹{upper_be:,.0f} &nbsp;⚠️ Unlimited risk
                 </div>
             </div>
@@ -828,8 +844,8 @@ try:
                 <div class="strat-profit" style="color:#4ade80;">
                     💰 Net Credit: ₹{net:,.2f}/lot &nbsp;(₹{net*lot_size:,.0f} total)
                 </div>
-                <div style="color:#f87171; font-size:13px; margin-top:4px;">
-                    Max Risk: ₹{max_risk:,.2f}/lot
+                <div style="color:#fca5a5; font-size:14px; margin-top:6px; font-weight:700;">
+                    ⚠️ Max Risk: ₹{max_risk:,.2f}/lot
                 </div>
             </div>
             """, unsafe_allow_html=True)
@@ -855,8 +871,8 @@ try:
                 <div class="strat-profit" style="color:#4ade80;">
                     💰 Net Credit: ₹{net:,.2f}/lot &nbsp;(₹{net*lot_size:,.0f} total)
                 </div>
-                <div style="color:#f87171; font-size:13px; margin-top:4px;">
-                    Max Risk: ₹{max_risk:,.2f}/lot
+                <div style="color:#fca5a5; font-size:14px; margin-top:6px; font-weight:700;">
+                    ⚠️ Max Risk: ₹{max_risk:,.2f}/lot
                 </div>
             </div>
             """, unsafe_allow_html=True)
