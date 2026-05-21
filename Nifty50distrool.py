@@ -59,12 +59,12 @@ footer { visibility: hidden; }
 # ── Title Bar Fixed on Top ──
 st.title("⚡ Upstox Live Multi-Index OI & Statistical Dashboard")
 
-# ── Index Definitions (Keys matching Upstox Instrument Master) ──
+# ── Index Definitions (FIXED: Updated keys to match exact Upstox Instrument Master strings) ──
 INDICES = {
-    "NIFTY 50": {"key": "NSE_INDEX|Nifty_50", "lot_size": 50, "diff": 50, "default_spot": 23800},
-    "BANK NIFTY": {"key": "NSE_INDEX|Nifty_Bank", "lot_size": 15, "diff": 100, "default_spot": 51200},
-    "FINNIFTY": {"key": "NSE_INDEX|FINNIFTY", "lot_size": 40, "diff": 50, "default_spot": 22400},
-    "MIDCAP NIFTY": {"key": "NSE_INDEX|MIDCPNIFTY", "lot_size": 75, "diff": 25, "default_spot": 12100},
+    "NIFTY 50": {"key": "NSE_INDEX|Nifty 50", "lot_size": 50, "diff": 50, "default_spot": 23800},
+    "BANK NIFTY": {"key": "NSE_INDEX|Nifty Bank", "lot_size": 15, "diff": 100, "default_spot": 51200},
+    "FINNIFTY": {"key": "NSE_INDEX|Nifty Fin Service", "lot_size": 40, "diff": 50, "default_spot": 22400},
+    "MIDCAP NIFTY": {"key": "NSE_INDEX|NIFTY MID SELECT", "lot_size": 75, "diff": 25, "default_spot": 12100},
 }
 
 # ── Upstox API Helper ──
@@ -387,7 +387,6 @@ with col_rec2:
         }
         st.table(adj_data)
 
-# ── 9. Automated Streaming Rerun Controller Loops ──
 if auto_refresh:
     time.sleep(refresh_interval)
     st.rerun()
