@@ -319,13 +319,16 @@ def compute_iv_percentile(candles_df: pd.DataFrame, current_iv: float, window=30
     return round(count_below / len(rv_series) * 100, 1)
 
 
-def compute_pnl_heatmap(strategy_legs, lot_size, spot_price, diff):
+def compute_pnl_heatmap(strategy_legs, lot_size, spot_price, diff, iv_used):
     """
     Compute strategy P&L across a grid of spot prices and days-to-expiry.
     Each leg: {"strike": K, "type": "CE"/"PE", "action": "BUY"/"SELL", "premium": ltp}
+    Uses fewer spot steps for readability (strike-aligned grid).
     """
-    spot_range = np.linspace(spot_price - 8*diff, spot_price + 8*diff, 50)
-    dte_range = np.array([0, 1, 2, 3, 5, 7, 10, 14])  # days to expiry
+    # Create a strike-aligned grid: every 'diff' points, ±6 strikes from ATM
+    atm = round(spot_price / diff) * diff
+    spot_range = np.arange(atm - 6*diff, atm + 6*diff + 1, diff)
+    dte_range = np.array([0, 1, 2, 3, 5, 7, 10, 14])
 
     pnl_matrix = np.zeros((len(dte_range), len(spot_range)))
 
@@ -336,14 +339,14 @@ def compute_pnl_heatmap(strategy_legs, lot_size, spot_price, diff):
                 K = leg["strike"]
                 prem = leg["premium"]
                 if dte == 0:
-                    # At expiry — intrinsic only
                     if leg["type"] == "CE":
                         val = max(0, s - K)
                     else:
                         val = max(0, K - s)
                 else:
                     T = dte / 365
-                    val = bs_greeks(s, K, T, 0.07, 0.15, leg["type"])["price"]
+                    sigma = iv_used if iv_used > 0 else 0.15
+                    val = bs_greeks(s, K, T, 0.07, sigma, leg["type"])["price"]
 
                 if leg["action"] == "BUY":
                     total += (val - prem)
@@ -879,63 +882,211 @@ try:
 
         # ── P&L Heatmap ──
         if legs:
-            st.markdown("#### 🗺️ P&L Heatmap (Spot × Days to Expiry)")
-            spot_arr, dte_arr, pnl_mat = compute_pnl_heatmap(legs, lot_size, spot_price, diff)
+            st.markdown("#### 🗺️ P&L Heatmap — What You Make or Lose")
+            st.caption("Each cell shows your total profit (green) or loss (red) in ₹, based on where the index lands (columns) and how many days remain until expiry (rows). Hover any cell for details.")
 
-            # Custom red-white-green colorscale
+            spot_arr, dte_arr, pnl_mat = compute_pnl_heatmap(legs, lot_size, spot_price, diff, iv_override)
+
+            # Format labels
+            spot_labels = [f"{int(s):,}" for s in spot_arr]
+            dte_labels = [f"{int(d)}d left" if d > 0 else "Expiry Day" for d in dte_arr]
+
+            # Smart text: show ₹ values in K for large numbers
+            def fmt_cell(v):
+                v = int(round(v))
+                if abs(v) >= 1000:
+                    return f"₹{v/1000:+.1f}K"
+                return f"₹{v:+,}"
+
+            text_mat = [[fmt_cell(pnl_mat[i][j]) for j in range(len(spot_arr))] for i in range(len(dte_arr))]
+
+            # Color: red for loss, green for profit, dark neutral at zero
             colorscale = [
-                [0, "#dc2626"],
-                [0.35, "#fca5a5"],
-                [0.5, "#1e293b"],
-                [0.65, "#86efac"],
-                [1, "#16a34a"],
+                [0.0,  "#991b1b"],   # deep red — max loss
+                [0.3,  "#ef4444"],   # red
+                [0.45, "#fca5a5"],   # light red
+                [0.5,  "#1e293b"],   # dark neutral — breakeven
+                [0.55, "#86efac"],   # light green
+                [0.7,  "#22c55e"],   # green
+                [1.0,  "#15803d"],   # deep green — max profit
             ]
 
             fig_hm = go.Figure(data=go.Heatmap(
                 z=pnl_mat,
-                x=np.round(spot_arr, 0),
-                y=[f"DTE {int(d)}" for d in dte_arr],
+                x=spot_labels,
+                y=dte_labels,
                 colorscale=colorscale,
                 zmid=0,
-                text=np.round(pnl_mat, 0).astype(int),
+                text=text_mat,
                 texttemplate="%{text}",
-                textfont=dict(size=9),
-                hovertemplate="Spot: %{x}<br>%{y}<br>P&L: ₹%{z:,.0f}<extra></extra>",
-                colorbar=dict(title="P&L (₹)", tickformat=","),
+                textfont=dict(size=11, family="JetBrains Mono, monospace"),
+                hovertemplate=(
+                    "<b>If index at %{x}</b><br>"
+                    "With %{y}<br>"
+                    "Your P&L: <b>₹%{z:,.0f}</b>"
+                    "<extra></extra>"
+                ),
+                colorbar=dict(
+                    title=dict(text="P&L (₹)", font=dict(size=11)),
+                    tickformat=",",
+                    tickprefix="₹",
+                    len=0.9,
+                ),
+                xgap=2, ygap=2,
             ))
-            fig_hm.update_layout(**PLOTLY_LAYOUT, height=350,
-                title=dict(text=f"{strat_choice} P&L — {lot_size} lot", font=dict(size=13)),
-                xaxis_title="Spot Price", yaxis_title="")
-            fig_hm.add_vline(x=spot_price, line=dict(color="#f1f5f9", width=1.5, dash="dash"),
-                             annotation_text="Current", annotation_position="top")
+
+            fig_hm.update_layout(
+                **PLOTLY_LAYOUT,
+                height=380,
+                title=dict(text=f"{strat_choice} — {lot_size} lot size", font=dict(size=14)),
+                xaxis=dict(
+                    title="Index Level ➜",
+                    tickangle=-45,
+                    gridcolor="rgba(30,41,59,0.4)",
+                    side="bottom",
+                ),
+                yaxis=dict(
+                    title="",
+                    gridcolor="rgba(30,41,59,0.4)",
+                    autorange="reversed",  # Expiry day at bottom
+                ),
+            )
+            # Mark current spot
+            current_label = f"{int(round(spot_price / diff) * diff):,}"
+            fig_hm.add_vline(
+                x=current_label,
+                line=dict(color="#fbbf24", width=2.5, dash="solid"),
+                annotation_text="▼ You Are Here",
+                annotation_position="top",
+                annotation=dict(font=dict(size=11, color="#fbbf24", family="Inter"), showarrow=False),
+            )
             st.plotly_chart(fig_hm, use_container_width=True)
 
-            # Payoff at expiry line chart
-            st.markdown("#### 📐 Payoff at Expiry")
-            expiry_pnl = pnl_mat[0]  # DTE 0 row
+            # ── Payoff at Expiry — simplified ──
+            st.markdown("#### 📐 Payoff at Expiry — Your Profit/Loss If You Hold Until End")
+            st.caption("This shows your final P&L based on where the index closes on expiry day. The flat green zone in the middle is your 'safe zone' where you keep the premium collected.")
+
+            expiry_pnl = pnl_mat[np.where(dte_arr == 0)[0][0]] if 0 in dte_arr else pnl_mat[0]
+
+            # Check if all zeros (premiums were 0)
+            has_real_data = np.any(expiry_pnl != 0)
+
+            if not has_real_data:
+                st.warning(
+                    "⚠️ All strategy leg premiums are ₹0.00 — this usually means the market is closed "
+                    "or the selected strikes don't have active quotes. The payoff chart will appear flat. "
+                    "Try again during market hours (9:15 AM – 3:30 PM IST)."
+                )
+
             fig_payoff = go.Figure()
-            # Color fill: green above 0, red below
+
+            # Profit zone (green fill above zero)
+            profit_y = np.where(expiry_pnl >= 0, expiry_pnl, 0)
             fig_payoff.add_trace(go.Scatter(
-                x=spot_arr, y=expiry_pnl, mode="lines",
-                line=dict(color="#e2e8f0", width=2), name="P&L",
-                fill="tozeroy",
-                fillcolor="rgba(34,197,94,0.15)",
-            ))
-            # Overlay red below zero
-            neg_pnl = np.where(expiry_pnl < 0, expiry_pnl, 0)
-            fig_payoff.add_trace(go.Scatter(
-                x=spot_arr, y=neg_pnl, mode="lines",
+                x=spot_arr, y=profit_y, mode="lines",
                 line=dict(color="rgba(0,0,0,0)", width=0),
-                fill="tozeroy", fillcolor="rgba(239,68,68,0.15)",
-                showlegend=False,
+                fill="tozeroy", fillcolor="rgba(34,197,94,0.25)",
+                name="Profit Zone", showlegend=True,
             ))
-            fig_payoff.add_hline(y=0, line=dict(color="#475569", width=1))
-            fig_payoff.add_vline(x=spot_price, line=dict(color="#3b82f6", dash="dash", width=1),
-                                 annotation_text="Spot")
-            fig_payoff.update_layout(**PLOTLY_LAYOUT, height=280,
-                title=dict(text="Expiry Payoff Profile", font=dict(size=13)),
-                xaxis_title="Spot at Expiry", yaxis_title="P&L (₹)")
+
+            # Loss zone (red fill below zero)
+            loss_y = np.where(expiry_pnl <= 0, expiry_pnl, 0)
+            fig_payoff.add_trace(go.Scatter(
+                x=spot_arr, y=loss_y, mode="lines",
+                line=dict(color="rgba(0,0,0,0)", width=0),
+                fill="tozeroy", fillcolor="rgba(239,68,68,0.25)",
+                name="Loss Zone", showlegend=True,
+            ))
+
+            # Main P&L line
+            fig_payoff.add_trace(go.Scatter(
+                x=spot_arr, y=expiry_pnl, mode="lines+markers",
+                line=dict(color="#f1f5f9", width=2.5),
+                marker=dict(size=5, color="#f1f5f9"),
+                name="Your P&L",
+                hovertemplate="Index at %{x:,.0f}<br>P&L: <b>₹%{y:,.0f}</b><extra></extra>",
+            ))
+
+            # Breakeven line
+            fig_payoff.add_hline(y=0, line=dict(color="#fbbf24", width=1.5, dash="dash"),
+                                 annotation_text="Breakeven", annotation_position="bottom right",
+                                 annotation=dict(font=dict(color="#fbbf24", size=10)))
+
+            # Current spot marker
+            fig_payoff.add_vline(x=spot_price, line=dict(color="#3b82f6", dash="dash", width=1.5),
+                                 annotation_text="Current Spot",
+                                 annotation=dict(font=dict(color="#60a5fa", size=10)))
+
+            # Mark max profit and max loss
+            max_p = np.max(expiry_pnl)
+            max_l = np.min(expiry_pnl)
+            if max_p > 0:
+                best_spot = spot_arr[np.argmax(expiry_pnl)]
+                fig_payoff.add_annotation(
+                    x=best_spot, y=max_p,
+                    text=f"Max Profit ₹{max_p:,.0f}",
+                    showarrow=True, arrowhead=2, arrowcolor="#4ade80",
+                    font=dict(color="#4ade80", size=11, family="JetBrains Mono"),
+                    bgcolor="rgba(17,24,39,0.8)", bordercolor="#4ade80", borderwidth=1,
+                )
+            if max_l < 0:
+                worst_spot = spot_arr[np.argmin(expiry_pnl)]
+                fig_payoff.add_annotation(
+                    x=worst_spot, y=max_l,
+                    text=f"Max Loss ₹{max_l:,.0f}",
+                    showarrow=True, arrowhead=2, arrowcolor="#f87171",
+                    font=dict(color="#f87171", size=11, family="JetBrains Mono"),
+                    bgcolor="rgba(17,24,39,0.8)", bordercolor="#f87171", borderwidth=1,
+                )
+
+            fig_payoff.update_layout(
+                **PLOTLY_LAYOUT, height=340,
+                title=dict(text="What Happens on Expiry Day", font=dict(size=14)),
+                xaxis_title="Where the Index Closes ➜",
+                yaxis_title="Your Profit / Loss (₹)",
+                yaxis=dict(tickprefix="₹", tickformat=",", gridcolor="rgba(30,41,59,0.6)", zeroline=False),
+                xaxis=dict(tickformat=",", gridcolor="rgba(30,41,59,0.6)", zeroline=False),
+            )
             st.plotly_chart(fig_payoff, use_container_width=True)
+
+            # ── Quick Summary Box ──
+            if has_real_data:
+                net_credit = sum(
+                    leg["premium"] * (1 if leg["action"] == "SELL" else -1)
+                    for leg in legs
+                )
+                net_credit_total = net_credit * lot_size
+
+                summary_color = "#4ade80" if net_credit > 0 else "#f87171"
+                st.markdown(f"""
+                <div style="border:1px solid #1e293b; border-radius:10px; padding:16px; margin:10px 0;
+                            background:rgba(17,24,39,0.6); display:flex; flex-wrap:wrap; gap:24px; align-items:center;">
+                    <div>
+                        <div style="font-size:10px; color:#64748b; text-transform:uppercase; letter-spacing:1.5px;">You Collect</div>
+                        <div style="font-size:22px; font-weight:800; color:{summary_color}; font-family:'JetBrains Mono',monospace;">
+                            ₹{net_credit_total:,.0f}
+                        </div>
+                    </div>
+                    <div>
+                        <div style="font-size:10px; color:#64748b; text-transform:uppercase; letter-spacing:1.5px;">Best Case</div>
+                        <div style="font-size:22px; font-weight:800; color:#4ade80; font-family:'JetBrains Mono',monospace;">
+                            ₹{max_p:,.0f}
+                        </div>
+                    </div>
+                    <div>
+                        <div style="font-size:10px; color:#64748b; text-transform:uppercase; letter-spacing:1.5px;">Worst Case</div>
+                        <div style="font-size:22px; font-weight:800; color:#f87171; font-family:'JetBrains Mono',monospace;">
+                            ₹{max_l:,.0f}
+                        </div>
+                    </div>
+                    <div>
+                        <div style="font-size:10px; color:#64748b; text-transform:uppercase; letter-spacing:1.5px;">Risk:Reward</div>
+                        <div style="font-size:22px; font-weight:800; color:#e2e8f0; font-family:'JetBrains Mono',monospace;">
+                            1 : {abs(max_p/max_l):.1f}
+                        </div>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True) if max_l != 0 else None
 
     # ──────────────────────────────────
     #  TAB 4: CHARTS
