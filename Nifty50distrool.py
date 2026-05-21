@@ -201,18 +201,6 @@ st.sidebar.markdown('<div class="sidebar-header">UPSTOX Engine</div>', unsafe_al
 st.sidebar.markdown('<div class="sidebar-title">OI Analyzer Pro</div>', unsafe_allow_html=True)
 st.sidebar.markdown("---")
 
-api_token = st.sidebar.text_input("Upstox Access Token (Bearer)", type="password", help="Paste only the raw alphanumeric token here. Do NOT type 'Bearer'.")
-selected_idx_label = st.sidebar.selectbox("Select Target Asset Index:", list(INDICES.keys()))
-
-lot_size = INDICES[selected_idx_label]["lot_size"]
-instrument_key = INDICES[selected_idx_label]["key"]
-oi_step = INDICES[selected_idx_label]["diff"]
-
-client = UpstoxClient(api_token if api_token else "SIMULATED_TOKEN")
-
-spot_price = INDICES[selected_idx_label]["default_spot"]
-is_live = False
-raw_data = []
 
 # Fetch Expiries Array
 expiries_list = client.get_expiries(instrument_key)
