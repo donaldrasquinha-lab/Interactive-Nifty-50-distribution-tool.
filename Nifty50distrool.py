@@ -58,20 +58,22 @@ if upstox_token:
             'Authorization': f'Bearer {upstox_token}'
         }
         
-        # A. Fetch Spot Price using Market Quote v2 API
-        quote_url = f'https://upstox.com{instrument_key}'
-        quote_res = requests.get(quote_url, headers=headers).json()
+        # A. Corrected Spot Price Query using Market Quote v2 API
+        quote_url = 'https://upstox.com'
+        quote_params = {'instrument_key': instrument_key}
+        quote_res = requests.get(quote_url, headers=headers, params=quote_params).json()
         
-        if quote_res.get('status') == 'success':
+        if quote_res.get('status') == 'success' and instrument_key in quote_res.get('data', {}):
             spot_price = quote_res['data'][instrument_key]['last_price']
             atm_strike = int(round(spot_price / oi_step) * oi_step)
             is_live = True
             
-        # B. Fetch Option Chain API Data
-        chain_url = f'https://upstox.com{instrument_key}'
-        chain_res = requests.get(chain_url, headers=headers).json()
+        # B. Corrected Option Chain API Call
+        chain_url = 'https://api.upstox.com/v2/option/chain'
+        chain_params = {'instrument_key': instrument_key, 'expiry_date': '2026-05-28'}
+        chain_res = requests.get(chain_url, headers=headers, params=chain_params).json()
         
-        if chain_res.get('status') == 'success' and len(chain_res['data']) > 0:
+        if chain_res.get('status') == 'success' and len(chain_res.get('data', [])) > 0:
             max_oi = -1
             best_oi_strike = atm_strike + oi_step
             premium_lookup = {}
@@ -178,7 +180,7 @@ with col_right:
         ax_t.text(max_prof_x - 140, max_prof_y - 950, f"Max Profit: ₹{int(max_prof_y)}", fontsize=9, weight='bold', color='#0f766e')
 
     ax_t.axhline(0, color='#475569', linestyle='-', linewidth=1.2)
-    # FIXED LINE HERE: Added [0, 0] to complete the scatter dimensions
+    # FIX APPLIED HERE: Added the required matching y-axis zero array to fix scatter parsing error
     ax_t.scatter([lower_be, upper_be], [0, 0], color='#b45309', s=60, zorder=5)
     ax_t.set_xlim(x.min(), x.max())
     ax_t.grid(True, linestyle=":", alpha=0.5)
