@@ -69,7 +69,8 @@ INDICES = {
 
 # ── Upstox API Helper ──
 class UpstoxClient:
-    BASE = "https://upstox.com"
+    # Explicitly defining the absolute base domain for API access routing
+    BASE = "https://api.upstox.com/v2"
 
     def __init__(self, token: str):
         self.headers = {
@@ -79,20 +80,29 @@ class UpstoxClient:
 
     def get_spot_price(self, instrument_key: str):
         url = f"{self.BASE}/market-quote/quotes"
-        params = {"instrument_key": instrument_key}
+        
+        # Checking compatibility by querying both parameters safely
+        params = {"instrumentKey": instrument_key, "instrument_key": instrument_key}
         r = requests.get(url, headers=self.headers, params=params, timeout=10)
         r.raise_for_status()
         data = r.json()
         
-        if "data" in data and instrument_key in data["data"]:
-            return float(data["data"][instrument_key]["last_price"])
-        else:
-            first_key = list(data.get("data", {}).keys())[0]
-            return float(data["data"][first_key]["last_price"])
+        # Extraction framework mapping with explicit fallbacks
+        data_body = data.get("data", {})
+        if instrument_key in data_body:
+            return float(data_body[instrument_key]["last_price"])
+        
+        # Fallback tracking logic if keys return with custom casings
+        keys_list = list(data_body.keys())
+        if keys_list:
+            return float(data_body[keys_list[0]]["last_price"])
+            
+        raise ValueError(f"Unable to parse index value for instrument key: {instrument_key}")
 
     def get_expiries(self, instrument_key: str):
         url = f"{self.BASE}/option/contract"
-        r = requests.get(url, headers=self.headers, params={"instrument_key": instrument_key}, timeout=10)
+        params = {"instrumentKey": instrument_key, "instrument_key": instrument_key}
+        r = requests.get(url, headers=self.headers, params=params, timeout=10)
         r.raise_for_status()
         data = r.json()
         expiries = sorted(set(
@@ -103,13 +113,18 @@ class UpstoxClient:
 
     def get_option_chain(self, instrument_key: str, expiry_date: str):
         url = f"{self.BASE}/option/chain"
-        params = {"instrument_key": instrument_key, "expiry_date": expiry_date}
+        params = {
+            "instrument_key": instrument_key, 
+            "instrumentKey": instrument_key,
+            "expiry_date": expiry_date,
+            "expiryDate": expiry_date
+        }
         r = requests.get(url, headers=self.headers, params=params, timeout=10)
         r.raise_for_status()
         return r.json().get("data", [])
 
     def get_historical_candles(self, instrument_key: str, interval: str = "day", days: int = 45):
-        """Fetch historical data. Explicitly unpack nested candles arrays by explicit indexes."""
+        """Fetch historical candle structure data safely mapping internal index strings."""
         to_date = datetime.now().strftime("%Y-%m-%d")
         from_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
         
@@ -124,8 +139,6 @@ class UpstoxClient:
             
         rows = []
         for c in candles:
-            # Explicit unpacking mapping to handle Upstox numeric index positions
-            # [timestamp, open, high, low, close, volume, open_interest]
             if len(c) >= 5:
                 rows.append({
                     "timestamp": c[0],
@@ -134,7 +147,6 @@ class UpstoxClient:
                     "low": float(c[3]),
                     "close": float(c[4])
                 })
-        # Sort ascending order so shift analytics build indicators chronologically
         cdf = pd.DataFrame(rows).sort_values("timestamp").reset_index(drop=True)
         return cdf
 
