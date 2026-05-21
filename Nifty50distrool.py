@@ -69,7 +69,7 @@ INDICES = {
 
 # ── Upstox API Helper ──
 class UpstoxClient:
-    BASE = "https://api.upstox.com/v2"
+    BASE = "https://upstox.com"
 
     def __init__(self, token: str):
         self.headers = {
@@ -241,7 +241,7 @@ else:
         
         # Calculate dynamic time vectors
         expiry_dt = datetime.strptime(selected_expiry, "%Y-%m-%d").replace(hour=15, minute=30)
-        time_to_expiry_days = (expiry_dt - datetime.now()).total_seconds() / (36400 * 365)
+        time_to_expiry_days = (expiry_dt - datetime.now()).total_seconds() / (86400 * 365)
         time_to_expiry_days = max(time_to_expiry_days, 0.0001) # floor zero values
         
         # Fetch technical structure indicators
@@ -323,19 +323,61 @@ else:
         </div>
         """, unsafe_allow_html=True)
         
+        # ── Normal Distribution Price Prediction Engine ──
+        st.subheader("🎯 Statistical Price Prediction Range (Normal Distribution Model)")
+        
+        # Compute standard deviation based on log-normal distribution step parameters
+        # Standard deviation of price move = Spot * IV * sqrt(T)
+        std_dev_price = spot_price * iv_override * np.sqrt(time_to_expiry_days)
+        
+        # Standard Boundaries 1 Sigma (68.2%) and 2 Sigma (95.4%)
+        lower_1sigma = spot_price - std_dev_price
+        upper_1sigma = spot_price + std_dev_price
+        lower_2sigma = spot_price - (2 * std_dev_price)
+        upper_2sigma = spot_price + (2 * std_dev_price)
+        
+        # Display Predicted Bands inside clean modern layout columns
+        p_col1, p_col2, p_col3 = st.columns(3)
+        p_col1.metric("1-Sigma Low Bound (68.2%)", f"₹ {lower_1sigma:,.2f}")
+        p_col2.metric("🎯 Median Expected Spot", f"₹ {spot_price:,.2f}")
+        p_col3.metric("1-Sigma High Bound (68.2%)", f"₹ {upper_1sigma:,.2f}")
+        
+        # Visual Mapping Configuration: Bell Curve
+        fig_bell, ax_bell = plt.subplots(figsize=(12, 4.5))
+        x_axis = np.linspace(spot_price - 3.5 * std_dev_price, spot_price + 3.5 * std_dev_price, 500)
+        y_axis = norm.pdf(x_axis, spot_price, std_dev_price)
+        
+        ax_bell.plot(x_axis, y_axis, color="#0f172a", linewidth=2, label="Probability Density Function")
+        
+        # Shading Sigma Probability bands
+        ax_bell.fill_between(x_axis, y_axis, where=(x_axis >= lower_1sigma) & (x_axis <= upper_1sigma), 
+                             color="#38bdf8", alpha=0.35, label="68.2% Confidence Zone (1σ)")
+        ax_bell.fill_between(x_axis, y_axis, where=((x_axis >= lower_2sigma) & (x_axis < lower_1sigma)) | ((x_axis > upper_1sigma) & (x_axis <= upper_2sigma)), 
+                             color="#0284c7", alpha=0.15, label="95.4% Confidence Zone (2σ)")
+        
+        # Visual Boundary Anchors
+        ax_bell.axvline(spot_price, color="#0f172a", linestyle="-", linewidth=1.5, label=f"Current Spot ({spot_price:,.1f})")
+        ax_bell.axvline(lower_1sigma, color="#ef4444", linestyle="--", linewidth=1.2)
+        ax_bell.axvline(upper_1sigma, color="#22c55e", linestyle="--", linewidth=1.2)
+        
+        ax_bell.set_title(f"Expiry Statistical Forecast Structure for {selected_index_name} (Target: {selected_expiry})", fontsize=11, fontweight="bold")
+        ax_bell.set_xlabel("Predicted Index Settlement Price", fontsize=9)
+        ax_bell.set_ylabel("Probability Density", fontsize=9)
+        ax_bell.legend(loc="upper right", fontsize=8)
+        ax_bell.grid(True, linestyle=":", alpha=0.4)
+        
+        st.pyplot(fig_bell)
+        
         # Display Core Options Execution Table Matrix Grid Array
         st.subheader("📊 Interactive Options Chain Model & Analytical Greeks")
         
         def color_strikes(row):
             val = row["Strike"]
             styles = [""] * len(row)
-            # Shade In-The-Money options cells differently for high scan UX
-            if val < spot_price: # CE is ITM
-                styles[0] = "background-color: #f0fdf4;"
-                styles[3] = "background-color: #f0fdf4;"
-            if val > spot_price: # PE is ITM
-                styles[5] = "background-color: #fef2f2;"
-                styles[8] = "background-color: #fef2f2;"
+            if val < spot_price:
+                styles = ["background-color: #f0fdf4;"] * len(row)
+            if val > spot_price:
+                styles = ["background-color: #fef2f2;"] * len(row)
             return styles
             
         styled_df = df_chain.style.apply(color_strikes, axis=1).format({
@@ -343,7 +385,7 @@ else:
             "Strike": "{:,.0f}",
             "PE LTP": "₹{:.2f}", "PE Theta": "{:.2f}", "PE Delta": "{:.2f}", "PE OI": "{:,.0f}"
         })
-        st.dataframe(styled_df, use_container_width=True, height=450)
+        st.dataframe(styled_df, use_container_width=True, height=400)
         
         # Matplotlib visualization arrays for dashboard charting layout execution
         st.subheader("📈 Open Interest Distribution Profile")
