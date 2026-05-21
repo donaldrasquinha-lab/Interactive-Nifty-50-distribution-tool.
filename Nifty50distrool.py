@@ -11,6 +11,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.stats import norm
 import requests
+import urllib.parse
 import json
 import pandas as pd
 from datetime import datetime, timedelta
@@ -71,8 +72,6 @@ INDICES = {
 
 # ── Upstox API Helper ──
 class UpstoxClient:
-    BASE = "https://upstox.com"
-
     def __init__(self, token: str):
         self.headers = {
             "Authorization": f"Bearer {token}",
@@ -80,8 +79,10 @@ class UpstoxClient:
         }
 
     def get_spot_price(self, instrument_key: str):
-        url = f"{self.BASE}/market-quote/quotes"
-        params = {"instrumentKey": instrument_key, "instrument_key": instrument_key}
+        # Explicit base path targeting to avoid route dropping
+        url = "https://upstox.com"
+        params = {"instrument_key": instrument_key}
+        
         r = requests.get(url, headers=self.headers, params=params, timeout=10)
         r.raise_for_status()
         data = r.json()
@@ -89,16 +90,21 @@ class UpstoxClient:
         data_body = data.get("data", {})
         if instrument_key in data_body:
             return float(data_body[instrument_key]["last_price"])
-        
-        keys_list = list(data_body.keys())
-        if keys_list:
-            return float(data_body[keys_list]["last_price"])
             
-        raise ValueError(f"Unable to parse index value for instrument key: {instrument_key}")
+        # Flexible string matching evaluation in case of dynamic key changes
+        for key in data_body.keys():
+            if key.lower().replace(" ", "") == instrument_key.lower().replace(" ", ""):
+                return float(data_body[key]["last_price"])
+                
+        first_key = list(data_body.keys())
+        if first_key:
+            return float(data_body[first_key]["last_price"])
+            
+        raise ValueError(f"Unable to resolve symbol: {instrument_key}")
 
     def get_expiries(self, instrument_key: str):
-        url = f"{self.BASE}/option/contract"
-        params = {"instrumentKey": instrument_key, "instrument_key": instrument_key}
+        url = "https://upstox.com"
+        params = {"instrument_key": instrument_key}
         r = requests.get(url, headers=self.headers, params=params, timeout=10)
         r.raise_for_status()
         data = r.json()
@@ -109,13 +115,8 @@ class UpstoxClient:
         return [e for e in expiries if e and e != "None"]
 
     def get_option_chain(self, instrument_key: str, expiry_date: str):
-        url = f"{self.BASE}/option/chain"
-        params = {
-            "instrument_key": instrument_key, 
-            "instrumentKey": instrument_key,
-            "expiry_date": expiry_date,
-            "expiryDate": expiry_date
-        }
+        url = "https://upstox.com"
+        params = {"instrument_key": instrument_key, "expiry_date": expiry_date}
         r = requests.get(url, headers=self.headers, params=params, timeout=10)
         r.raise_for_status()
         return r.json().get("data", [])
@@ -124,7 +125,10 @@ class UpstoxClient:
         to_date = datetime.now().strftime("%Y-%m-%d")
         from_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
         
-        url = f"{self.BASE}/historical-candle/{instrument_key}/{interval}/{to_date}/{from_date}"
+        # URL safe encoding component separation layer
+        encoded_key = urllib.parse.quote(instrument_key)
+        url = f"https://upstox.com{encoded_key}/{interval}/{to_date}/{from_date}"
+        
         r = requests.get(url, headers=self.headers, timeout=10)
         r.raise_for_status()
         data = r.json()
@@ -319,7 +323,7 @@ else:
         if adx_metrics:
             m_col4.metric("ADX (14 Period Trend)", f"{adx_metrics['adx']}", f"DI+/DI-: {adx_metrics['plus_di']}/{adx_metrics['minus_di']}")
         else:
-            m_col4.metric("ADX (14 Period Trend)", "Data Window Error")
+            m_col4.metric("ADX (14 Period Trend)", "Data Processing Error")
 
         st.markdown(f"""
         <div class="direction-card" style="{card_bg}">
@@ -343,8 +347,6 @@ else:
         p_col2.metric("🎯 Median Expected Spot", f"₹ {spot_price:,.2f}")
         p_col3.metric("1-Sigma High Bound (68.2%)", f"₹ {upper_1sigma:,.2f}")
         
-        # ── Strategy Selector Engine Block ──
-        # Round 1-Sigma boundaries to nearest exchange strike intervals
         ic_sell_put = round(lower_1sigma / diff) * diff
         ic_sell_call = round(upper_1sigma / diff) * diff
         ic_buy_put = ic_sell_put - diff
@@ -360,7 +362,6 @@ else:
         ax_bell.fill_between(x_axis, y_axis, where=((x_axis >= lower_2sigma) & (x_axis < lower_1sigma)) | ((x_axis > upper_1sigma) & (x_axis <= upper_2sigma)), 
                              color="#0284c7", alpha=0.15, label="95.4% Confidence Zone (2σ)")
         
-        # Map strategy zone anchors onto the Matplotlib configuration array
         ax_bell.axvline(spot_price, color="#0f172a", linestyle="-", linewidth=1.5, label=f"Current Spot ({spot_price:,.1f})")
         ax_bell.axvline(ic_sell_put, color="#e11d48", linestyle=":", linewidth=2, label=f"IC Sell Floor ({ic_sell_put})")
         ax_bell.axvline(ic_sell_call, color="#16a34a", linestyle=":", linewidth=2, label=f"IC Sell Cap ({ic_sell_call})")
