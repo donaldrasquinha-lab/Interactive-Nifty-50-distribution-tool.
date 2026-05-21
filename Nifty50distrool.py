@@ -73,89 +73,90 @@ if upstox_token:
         quote_params = {'instrument_key': instrument_key}
         quote_response = requests.get(quote_url, headers=headers, params=quote_params)
         
-        if quote_response.status_code == 200:
+        # SAFE GUARD: Verify HTTP 200 AND JSON Content Type to block raw HTML text
+        if quote_response.status_code == 200 and 'application/json' in quote_response.headers.get('Content-Type', ''):
             quote_res = quote_response.json()
             if quote_res.get('status') == 'success' and instrument_key in quote_res.get('data', {}):
                 spot_price = quote_res['data'][instrument_key]['last_price']
                 atm_strike = int(round(spot_price / oi_step) * oi_step)
                 is_live = True
                 
-            # B. Fetch Option Chain ONLY if Spot Price step succeeded
-            chain_url = 'https://upstox.com'
-            chain_params = {'instrument_key': instrument_key} 
-            chain_response = requests.get(chain_url, headers=headers, params=chain_params)
-            
-            # CRITICAL SAFETIES APPLIED: Ensure response is JSON (HTTP 200) to bypass HTML "char 0" crashes
-            if chain_response.status_code == 200:
-                chain_res = chain_response.json()
-                raw_data = chain_res.get('data', [])
+                # B. Fetch Option Chain ONLY if Spot Price step succeeded cleanly
+                chain_url = 'https://upstox.com'
+                chain_params = {'instrument_key': instrument_key} 
+                chain_response = requests.get(chain_url, headers=headers, params=chain_params)
                 
-                if chain_res.get('status') == 'success' and len(raw_data) > 0:
-                    max_oi = -1
-                    best_oi_strike = atm_strike + oi_step
-                    premium_lookup = {}
-                    processed_records = []
-                    timestamp_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                if chain_response.status_code == 200 and 'application/json' in chain_response.headers.get('Content-Type', ''):
+                    chain_res = chain_response.json()
+                    raw_data = chain_res.get('data', [])
                     
-                    # Detect target expiry date dynamically from payload metadata
-                    first_row = raw_data[0]
-                    sample_leg = first_row.get('call_options') or first_row.get('put_options')
-                    if sample_leg:
-                        detected_expiry = sample_leg.get('metadata', {}).get('expiry_date', 'Unknown')
+                    if chain_res.get('status') == 'success' and len(raw_data) > 0:
+                        max_oi = -1
+                        best_oi_strike = atm_strike + oi_step
+                        premium_lookup = {}
+                        processed_records = []
+                        timestamp_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        
+                        # Detect target expiry date dynamically from payload metadata
+                        first_row = raw_data[0]
+                        sample_leg = first_row.get('call_options') or first_row.get('put_options')
+                        if sample_leg:
+                            detected_expiry = sample_leg.get('metadata', {}).get('expiry_date', 'Unknown')
 
-                    # Loop through option chain array matrices
-                    for item in raw_data:
-                        strike = int(item['strike_price'])
-                        ce_data = item.get('call_options', {}).get('market_data', {}) if item.get('call_options') else {}
-                        pe_data = item.get('put_options', {}).get('market_data', {}) if item.get('put_options') else {}
-                        
-                        current_oi = ce_data.get('oi', 0)
-                        premium_lookup[strike] = ce_data.get('ltp', atm_premium)
-                        
-                        if strike > spot_price and current_oi > max_oi:
-                            max_oi = current_oi
-                            best_oi_strike = strike
+                        # Loop through option chain array matrices
+                        for item in raw_data:
+                            strike = int(item['strike_price'])
+                            ce_data = item.get('call_options', {}).get('market_data', {}) if item.get('call_options') else {}
+                            pe_data = item.get('put_options', {}).get('market_data', {}) if item.get('put_options') else {}
                             
-                        processed_records.append({
-                            "Timestamp": timestamp_str,
-                            "Underlying": selected_index,
-                            "Spot_Price": spot_price,
-                            "Expiry_Date": detected_expiry,
-                            "Strike_Price": strike,
-                            "CE_LTP": ce_data.get('ltp', 0.0),
-                            "CE_OI": current_oi,
-                            "PE_LTP": pe_data.get('ltp', 0.0),
-                            "PE_OI": pe_data.get('oi', 0)
-                        })
-                    
-                    # Map strategy coordinates using live parameters
-                    oi_wall_strike = best_oi_strike
-                    atm_premium = premium_lookup.get(atm_strike, atm_premium)
-                    oi_wall_premium = premium_lookup.get(oi_wall_strike, oi_wall_premium)
-                    
-                    strike_sell = oi_wall_strike
-                    strike_hedge = strike_sell + (strike_sell - atm_strike)
-                    hedge_premium = premium_lookup.get(strike_hedge, hedge_premium)
-                    
-                    # Write computational data outputs directly to system disk
-                    filename_prefix = selected_index.replace(" ", "_").lower()
-                    df_export = pd.DataFrame(processed_records)
-                    df_export.to_csv(f"{filename_prefix}_chain_latest.csv", index=False)
-                    
-                    json_package = {
-                        "index": selected_index, "live_spot": spot_price, "active_expiry": detected_expiry,
-                        "last_synced": timestamp_str, "chain_matrix": processed_records
-                    }
-                    with open(f"{filename_prefix}_snapshot.json", "w") as j_file:
-                        json.dump(json_package, j_file, indent=4)
+                            current_oi = ce_data.get('oi', 0)
+                            premium_lookup[strike] = ce_data.get('ltp', atm_premium)
+                            
+                            if strike > spot_price and current_oi > max_oi:
+                                max_oi = current_oi
+                                best_oi_strike = strike
+                                
+                            processed_records.append({
+                                "Timestamp": timestamp_str,
+                                "Underlying": selected_index,
+                                "Spot_Price": spot_price,
+                                "Expiry_Date": detected_expiry,
+                                "Strike_Price": strike,
+                                "CE_LTP": ce_data.get('ltp', 0.0),
+                                "CE_OI": current_oi,
+                                "PE_LTP": pe_data.get('ltp', 0.0),
+                                "PE_OI": pe_data.get('oi', 0)
+                            })
                         
-                    st.sidebar.success("💾 Computational Snapshot Logs Documented!")
-            else:
-                st.sidebar.warning(f"Option Chain Server Error ({chain_response.status_code}). Emulating premium curve.")
+                        # Map strategy coordinates using live parameters
+                        oi_wall_strike = best_oi_strike
+                        atm_premium = premium_lookup.get(atm_strike, atm_premium)
+                        oi_wall_premium = premium_lookup.get(oi_wall_strike, oi_wall_premium)
+                        
+                        strike_sell = oi_wall_strike
+                        strike_hedge = strike_sell + (strike_sell - atm_strike)
+                        hedge_premium = premium_lookup.get(strike_hedge, hedge_premium)
+                        
+                        # Write computational data outputs directly to system disk
+                        filename_prefix = selected_index.replace(" ", "_").lower()
+                        df_export = pd.DataFrame(processed_records)
+                        df_export.to_csv(f"{filename_prefix}_chain_latest.csv", index=False)
+                        
+                        json_package = {
+                            "index": selected_index, "live_spot": spot_price, "active_expiry": detected_expiry,
+                            "last_synced": timestamp_str, "chain_matrix": processed_records
+                        }
+                        with open(f"{filename_prefix}_snapshot.json", "w") as j_file:
+                            json.dump(json_package, j_file, indent=4)
+                            
+                        st.sidebar.success("💾 Snapshots Documented!")
+                else:
+                    st.sidebar.warning(f"Option Chain Server rejected parameters ({chain_response.status_code}). Using emulations.")
         else:
-            st.sidebar.error(f"LTP Spot Server Error ({quote_response.status_code}). check Token parameters.")
+            st.sidebar.error(f"Upstox Authorization Refused ({quote_response.status_code}). Token is likely expired.")
+            
     except Exception as e:
-        st.sidebar.error(f"Fallback Active. Processing Math Model Engine. Error Detail: {str(e)}")
+        st.sidebar.error(f"Fallback Active. Math Model Processing Engine Enabled.")
 
 # Define final execution geometry anchors
 strike_buy = atm_strike
@@ -191,7 +192,7 @@ upper_be = strike_sell + ((strike_sell - strike_buy) - (atm_premium - (2 * oi_wa
 if is_live:
     st.success(f"🟢 LIVE API FEED MODE • Index: {selected_index} | Isolated Expiry: {detected_expiry}")
 else:
-    st.warning(f"🟡 SIMULATION MODE (No Active Token Detected) • Emulating Statistical Math Curves for {selected_index}")
+    st.warning(f"🟡 SIMULATION MODE (Mathematical Model Engine) • Emulating Statistical Math Curves for {selected_index}")
 
 # 5. Dual Dashboard Plot Layout
 col_left, col_right = st.columns(2)
