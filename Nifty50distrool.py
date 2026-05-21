@@ -1247,8 +1247,11 @@ try :
                     for leg in legs
                 )
                 net_credit_total = net_credit * lot_size
+   pass 
+except Exception as e:
+    st.error(f"Error in previous block: {e}")
 
-                summary_color = "#4ade80" if net_credit > 0 else "#f87171"
+summary_color = "#4ade80" if net_credit > 0 else "#f87171"
 
 # 1. Move the condition cleanly to its own line above the call
 if max_l != 0:
@@ -1283,8 +1286,7 @@ if max_l != 0:
         </div>
     </div>
     """, unsafe_allow_html=True)
-except Exception as e: # This closes the try block!
-    st.error(f"Error: {e}")
+
 
     # ──────────────────────────────────
     #  TAB 4: CHARTS
