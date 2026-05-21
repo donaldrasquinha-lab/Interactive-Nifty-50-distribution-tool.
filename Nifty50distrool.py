@@ -1,810 +1,1054 @@
 """
-╔══════════════════════════════════════════════════════════════╗
-║         UPSTOX ALPHA TRADING ENGINE — Live Options Matrix     ║
-║  Pulls live values, analyzes CE/PE metrics around ATM,      ║
-║  and features automated refresh triggers for active trading.║
-╚══════════════════════════════════════════════════════════════╝
+╔══════════════════════════════════════════════════════════════════╗
+║       UPSTOX ALPHA TRADING ENGINE v2 — Live Options Matrix      ║
+║  Tabbed layout · Plotly charts · IV Percentile · P&L Heatmap   ║
+║  OI Change Tracking · PCR Trend · Interactive Strategy Builder  ║
+╚══════════════════════════════════════════════════════════════════╝
 """
 
 import streamlit as st
 import numpy as np
-import matplotlib.pyplot as plt
 from scipy.stats import norm
 import requests
 import urllib.parse
 import json
 import pandas as pd
+import plotly.graph_objects as go
+import plotly.express as px
+from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 import time
+import colorsys
 
-# ── 1. Page Configuration & Scaffold Setup ──
+# ═══════════════════════════════════════════════
+#  PAGE CONFIG
+# ═══════════════════════════════════════════════
+
 st.set_page_config(
-    page_title="Upstox Alpha Live Signal Engine",
+    page_title="Upstox Alpha Engine v2",
     page_icon="⚡",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="expanded",
 )
 
-# Professional Light Theme CSS Injector
+# ═══════════════════════════════════════════════
+#  THEME CSS
+# ═══════════════════════════════════════════════
+
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700&family=JetBrains+Mono:wght@400;700&display=swap');
-h1, h2, h3, h4 { font-family: 'Outfit', sans-serif !important; }
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap');
 
-/* Dynamic KPI metric panel layout formatting */
+:root {
+    --bg-primary: #0a0e1a;
+    --bg-card: #111827;
+    --bg-card-alt: #1a2236;
+    --border: #1e293b;
+    --text-primary: #f1f5f9;
+    --text-secondary: #94a3b8;
+    --accent-green: #22c55e;
+    --accent-red: #ef4444;
+    --accent-blue: #3b82f6;
+    --accent-purple: #8b5cf6;
+    --accent-amber: #f59e0b;
+}
+
+html, body, [data-testid="stAppViewContainer"] {
+    font-family: 'Inter', sans-serif !important;
+}
+
+/* Metric cards */
 div[data-testid="stMetric"] {
-    background: #ffffff; border: 1px solid #e2e8f0; border-radius: 12px;
-    padding: 14px 18px; box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.05);
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px 16px;
 }
-div[data-testid="stMetric"] label { color: #64748b !important; font-size: 11px !important; letter-spacing: 1px; text-transform: uppercase; }
+div[data-testid="stMetric"] label {
+    color: var(--text-secondary) !important;
+    font-size: 10px !important;
+    letter-spacing: 1.2px;
+    text-transform: uppercase;
+    font-weight: 500 !important;
+}
 div[data-testid="stMetric"] div[data-testid="stMetricValue"] {
-    font-family: 'JetBrains Mono', monospace !important; font-weight: 700 !important; color: #0f172a !important; font-size: 22px !important;
+    font-family: 'JetBrains Mono', monospace !important;
+    font-weight: 700 !important;
+    font-size: 20px !important;
 }
 
-/* Direction sentiment summary blocks */
-.direction-card {
-    border-radius: 14px; padding: 22px; margin: 15px 0; font-family: 'JetBrains Mono', monospace; border: 1px solid #e2e8f0;
+/* Tabs */
+div[data-testid="stTabs"] button[data-baseweb="tab"] {
+    font-family: 'Inter', sans-serif !important;
+    font-weight: 600 !important;
+    font-size: 13px !important;
+    letter-spacing: 0.3px;
 }
-.score-label { font-size: 11px; letter-spacing: 2px; color: #ffffff; opacity: 0.9; margin-bottom: 4px; }
-.direction-text { font-size: 28px; font-weight: 700; color: #ffffff; }
-.sentiment-text { font-size: 13px; color: #f8fafc; margin-top: 4px; }
 
-/* Strategy execution playbook blocks */
-.playbook-card {
-    background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 12px; padding: 18px; margin: 10px 0;
+/* Sentiment card */
+.signal-card {
+    border-radius: 12px; padding: 20px; margin: 12px 0;
+    font-family: 'JetBrains Mono', monospace;
+    border: 1px solid rgba(255,255,255,0.08);
 }
-.playbook-title { font-size: 14px; font-weight: 700; color: #0f172a; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px; }
+.signal-label { font-size: 10px; letter-spacing: 2.5px; color: rgba(255,255,255,0.7); margin-bottom: 2px; text-transform: uppercase; }
+.signal-value { font-size: 26px; font-weight: 700; color: #fff; }
+.signal-sub { font-size: 12px; color: rgba(255,255,255,0.75); margin-top: 6px; line-height: 1.6; }
 
-/* Max pain & support/resistance badges */
-.sr-badge {
-    display: inline-block; padding: 4px 12px; border-radius: 6px; font-size: 12px;
-    font-weight: 600; margin: 2px 4px; font-family: 'JetBrains Mono', monospace;
+/* Strategy card */
+.strat-card {
+    background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px;
+    padding: 18px; margin: 10px 0;
 }
-.sr-support { background: #dcfce7; color: #166534; border: 1px solid #86efac; }
-.sr-resist  { background: #fee2e2; color: #991b1b; border: 1px solid #fca5a5; }
-.sr-maxpain { background: #dbeafe; color: #1e40af; border: 1px solid #93c5fd; }
+.strat-title {
+    font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;
+    margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid var(--border);
+}
+.strat-leg { font-size: 13px; line-height: 1.8; font-family: 'JetBrains Mono', monospace; }
+.strat-profit { font-size: 17px; font-weight: 700; margin-top: 10px; }
+
+/* Badge pills */
+.badge { display: inline-block; padding: 3px 10px; border-radius: 5px; font-size: 11px; font-weight: 600; font-family: 'JetBrains Mono', monospace; margin: 2px 3px; }
+.badge-green { background: rgba(34,197,94,0.15); color: #4ade80; border: 1px solid rgba(34,197,94,0.3); }
+.badge-red { background: rgba(239,68,68,0.15); color: #f87171; border: 1px solid rgba(239,68,68,0.3); }
+.badge-blue { background: rgba(59,130,246,0.15); color: #60a5fa; border: 1px solid rgba(59,130,246,0.3); }
+.badge-purple { background: rgba(139,92,246,0.15); color: #a78bfa; border: 1px solid rgba(139,92,246,0.3); }
+.badge-amber { background: rgba(245,158,11,0.15); color: #fbbf24; border: 1px solid rgba(245,158,11,0.3); }
+
+/* IV Gauge */
+.iv-gauge-container { display: flex; align-items: center; gap: 12px; margin: 6px 0; }
+.iv-gauge-bar { flex: 1; height: 10px; border-radius: 5px; background: linear-gradient(90deg, #22c55e 0%, #f59e0b 50%, #ef4444 100%); position: relative; }
+.iv-gauge-marker { position: absolute; top: -4px; width: 4px; height: 18px; background: #fff; border-radius: 2px; transform: translateX(-50%); box-shadow: 0 0 6px rgba(255,255,255,0.5); }
+.iv-pct-label { font-family: 'JetBrains Mono', monospace; font-size: 22px; font-weight: 700; min-width: 60px; text-align: right; }
 
 footer { visibility: hidden; }
 </style>
 """, unsafe_allow_html=True)
 
-# ── Title Bar Fixed on Top ──
-st.title("⚡ Upstox Live Multi-Index OI & Statistical Dashboard")
+# ═══════════════════════════════════════════════
+#  CONSTANTS & INDEX DEFINITIONS
+# ═══════════════════════════════════════════════
 
-# ── Index Definitions ──
-INDICES = {
-    "NIFTY 50": {"key": "NSE_INDEX|Nifty 50", "symbol": "NIFTY", "diff": 50},
-    "BANK NIFTY": {"key": "NSE_INDEX|Nifty Bank", "symbol": "BANKNIFTY", "diff": 100},
-    "FINNIFTY": {"key": "NSE_INDEX|Nifty Fin Service", "symbol": "FINNIFTY", "diff": 50},
-    "MIDCAP NIFTY": {"key": "NSE_INDEX|NIFTY MID SELECT", "symbol": "MIDCPNIFTY", "diff": 25},
-}
-
-# ── Upstox V2 API Base ──
 UPSTOX_BASE = "https://api.upstox.com/v2"
 
+INDICES = {
+    "NIFTY 50":     {"key": "NSE_INDEX|Nifty 50",          "symbol": "NIFTY",       "diff": 50,  "lot": 25},
+    "BANK NIFTY":   {"key": "NSE_INDEX|Nifty Bank",        "symbol": "BANKNIFTY",   "diff": 100, "lot": 15},
+    "FINNIFTY":     {"key": "NSE_INDEX|Nifty Fin Service",  "symbol": "FINNIFTY",    "diff": 50,  "lot": 25},
+    "MIDCAP NIFTY": {"key": "NSE_INDEX|NIFTY MID SELECT",  "symbol": "MIDCPNIFTY",  "diff": 25,  "lot": 50},
+}
 
-# ── Upstox API Helper ──
+PLOTLY_LAYOUT = dict(
+    template="plotly_dark",
+    paper_bgcolor="rgba(0,0,0,0)",
+    plot_bgcolor="rgba(17,24,39,0.6)",
+    font=dict(family="Inter, sans-serif", size=11, color="#94a3b8"),
+    margin=dict(l=50, r=30, t=40, b=40),
+    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, font=dict(size=10)),
+    xaxis=dict(gridcolor="rgba(30,41,59,0.6)", zeroline=False),
+    yaxis=dict(gridcolor="rgba(30,41,59,0.6)", zeroline=False),
+)
+
+# ═══════════════════════════════════════════════
+#  UPSTOX API CLIENT
+# ═══════════════════════════════════════════════
+
 class UpstoxClient:
-    """Wrapper around Upstox V2 REST API endpoints."""
-
     def __init__(self, token: str):
-        clean_token = token.strip().replace("Bearer ", "")
-        self.headers = {
-            "Authorization": f"Bearer {clean_token}",
-            "Accept": "application/json",
-        }
+        clean = token.strip().replace("Bearer ", "")
+        self.headers = {"Authorization": f"Bearer {clean}", "Accept": "application/json"}
 
-    # ── Response safety ──
-    def _safe_json(self, response):
-        """Safely parses response bodies, avoiding string crashes on raw HTML pages."""
-        ct = response.headers.get("Content-Type", "").lower()
+    def _safe_json(self, r):
+        ct = r.headers.get("Content-Type", "").lower()
         if "application/json" not in ct:
-            raise ValueError(
-                f"The API returned a non-JSON response (likely an HTML login page). "
-                f"This usually means the Access Token has expired (tokens expire at midnight IST daily). "
-                f"Status {response.status_code}. Snippet: {response.text[:200]}"
-            )
-        body = response.json()
+            raise ValueError(f"Non-JSON response (token expired?). Status {r.status_code}: {r.text[:200]}")
+        body = r.json()
         if body.get("status") == "error":
-            errors = body.get("errors", [])
-            msg = errors[0].get("message", str(errors)) if errors else str(body)
-            raise ValueError(f"Upstox API error: {msg}")
+            errs = body.get("errors", [])
+            msg = errs[0].get("message", str(errs)) if errs else str(body)
+            raise ValueError(f"Upstox API: {msg}")
         return body
 
-    # ── Market Quote (LTP / Last Price) ──
     def get_spot_price(self, instrument_key: str) -> float:
-        """Fetch the last traded price for an index or instrument via /market-quote/ltp."""
-        url = f"{UPSTOX_BASE}/market-quote/ltp"
-        params = {"instrument_key": instrument_key}
-        r = requests.get(url, headers=self.headers, params=params, timeout=10)
+        r = requests.get(f"{UPSTOX_BASE}/market-quote/ltp",
+                         headers=self.headers, params={"instrument_key": instrument_key}, timeout=10)
         r.raise_for_status()
-        data = self._safe_json(r)
+        data = self._safe_json(r).get("data", {})
+        for k, v in data.items():
+            if k == instrument_key or k.lower().replace(" ", "") == instrument_key.lower().replace(" ", ""):
+                return float(v["last_price"])
+        first = next(iter(data.values()), None)
+        if first:
+            return float(first["last_price"])
+        raise ValueError(f"Symbol not found: {instrument_key}")
 
-        data_body = data.get("data", {})
-        # The API nests data under the instrument key
-        if instrument_key in data_body:
-            return float(data_body[instrument_key]["last_price"])
-
-        # Fallback: try case-insensitive / whitespace-normalised match
-        norm_key = instrument_key.lower().replace(" ", "")
-        for key, val in data_body.items():
-            if key.lower().replace(" ", "") == norm_key:
-                return float(val["last_price"])
-
-        # Last resort: first available key
-        first_key = next(iter(data_body), None)
-        if first_key:
-            return float(data_body[first_key]["last_price"])
-
-        raise ValueError(f"Symbol not found in LTP response: {instrument_key}")
-
-    # ── Option Chain Expiry List ──
     def get_expiries(self, instrument_key: str) -> list:
-        """Retrieve available expiry dates for an instrument via /option/contract."""
-        url = f"{UPSTOX_BASE}/option/contract"
-        params = {"instrument_key": instrument_key}
-        r = requests.get(url, headers=self.headers, params=params, timeout=10)
+        r = requests.get(f"{UPSTOX_BASE}/option/contract",
+                         headers=self.headers, params={"instrument_key": instrument_key}, timeout=10)
         r.raise_for_status()
-        data = self._safe_json(r)
-
+        data = self._safe_json(r).get("data", [])
         expiries = sorted(set(
-            c.get("expiry", "")[:10]
-            if isinstance(c.get("expiry"), str) else str(c.get("expiry", ""))[:10]
-            for c in data.get("data", [])
+            str(c.get("expiry", ""))[:10] for c in data
         ))
         return [e for e in expiries if e and e != "None"]
 
-    # ── Option Chain Data ──
     def get_option_chain(self, instrument_key: str, expiry_date: str) -> list:
-        """Fetch the full option chain for an expiry via /option/chain."""
-        url = f"{UPSTOX_BASE}/option/chain"
-        params = {"instrument_key": instrument_key, "expiry_date": expiry_date}
-        r = requests.get(url, headers=self.headers, params=params, timeout=10)
+        r = requests.get(f"{UPSTOX_BASE}/option/chain",
+                         headers=self.headers,
+                         params={"instrument_key": instrument_key, "expiry_date": expiry_date}, timeout=10)
         r.raise_for_status()
-        data = self._safe_json(r)
-        return data.get("data", [])
+        return self._safe_json(r).get("data", [])
 
-    # ── Historical Candles ──
-    def get_historical_candles(self, instrument_key: str, interval: str = "day", days: int = 45) -> pd.DataFrame:
-        """Fetch OHLC candles via /historical-candle/{key}/{interval}/{to}/{from}."""
-        to_date = datetime.now().strftime("%Y-%m-%d")
-        from_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
-
-        encoded_key = urllib.parse.quote(instrument_key, safe="")
-        url = f"{UPSTOX_BASE}/historical-candle/{encoded_key}/{interval}/{to_date}/{from_date}"
-
-        r = requests.get(url, headers=self.headers, timeout=10)
+    def get_historical_candles(self, instrument_key: str, interval="day", days=45) -> pd.DataFrame:
+        to_d = datetime.now().strftime("%Y-%m-%d")
+        from_d = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+        enc = urllib.parse.quote(instrument_key, safe="")
+        r = requests.get(f"{UPSTOX_BASE}/historical-candle/{enc}/{interval}/{to_d}/{from_d}",
+                         headers=self.headers, timeout=10)
         r.raise_for_status()
-        data = self._safe_json(r)
-        candles = data.get("data", {}).get("candles", [])
-
+        candles = self._safe_json(r).get("data", {}).get("candles", [])
         if not candles:
             return pd.DataFrame()
-
-        rows = []
-        for c in candles:
-            if len(c) >= 6:
-                rows.append({
-                    "timestamp": c[0],
-                    "open": float(c[1]),
-                    "high": float(c[2]),
-                    "low": float(c[3]),
-                    "close": float(c[4]),
-                    "volume": int(c[5]) if len(c) > 5 else 0,
-                })
-        cdf = pd.DataFrame(rows).sort_values("timestamp").reset_index(drop=True)
-        return cdf
+        rows = [{"ts": c[0], "open": float(c[1]), "high": float(c[2]),
+                 "low": float(c[3]), "close": float(c[4]),
+                 "volume": int(c[5]) if len(c) > 5 else 0} for c in candles if len(c) >= 5]
+        return pd.DataFrame(rows).sort_values("ts").reset_index(drop=True)
 
 
-# ══════════════════════════════════════════════
-#  TECHNICAL INDICATORS
-# ══════════════════════════════════════════════
+# ═══════════════════════════════════════════════
+#  ANALYTICS FUNCTIONS
+# ═══════════════════════════════════════════════
 
-def compute_adx(candles_df: pd.DataFrame, period: int = 14):
-    """Compute Average Directional Index (ADX) with +DI / -DI."""
-    if candles_df.empty or len(candles_df) < (period * 2 + 2):
+def compute_adx(df: pd.DataFrame, period=14):
+    if df.empty or len(df) < period * 2 + 2:
         return None
-
-    df = candles_df.copy()
-    df["prev_high"] = df["high"].shift(1)
-    df["prev_low"] = df["low"].shift(1)
-    df["prev_close"] = df["close"].shift(1)
-
-    df["tr"] = df.apply(lambda r: max(
-        r["high"] - r["low"],
-        abs(r["high"] - r["prev_close"]) if pd.notna(r["prev_close"]) else 0,
-        abs(r["low"] - r["prev_close"]) if pd.notna(r["prev_close"]) else 0,
-    ), axis=1)
-
-    df["+dm"] = df.apply(lambda r: max(r["high"] - r["prev_high"], 0)
-                         if pd.notna(r["prev_high"]) and (r["high"] - r["prev_high"]) > (r["prev_low"] - r["low"])
-                         else 0, axis=1)
-    df["-dm"] = df.apply(lambda r: max(r["prev_low"] - r["low"], 0)
-                         if pd.notna(r["prev_low"]) and (r["prev_low"] - r["low"]) > (r["high"] - r["prev_high"])
-                         else 0, axis=1)
-
-    df = df.iloc[1:].reset_index(drop=True)
-
-    tr_smooth = [df["tr"].iloc[:period].sum()]
-    pdm_smooth = [df["+dm"].iloc[:period].sum()]
-    ndm_smooth = [df["-dm"].iloc[:period].sum()]
-
-    for i in range(period, len(df)):
-        tr_smooth.append(tr_smooth[-1] - (tr_smooth[-1] / period) + df["tr"].iloc[i])
-        pdm_smooth.append(pdm_smooth[-1] - (pdm_smooth[-1] / period) + df["+dm"].iloc[i])
-        ndm_smooth.append(ndm_smooth[-1] - (ndm_smooth[-1] / period) + df["-dm"].iloc[i])
-
-    plus_di_list, minus_di_list, dx_list = [], [], []
-
-    for i in range(len(tr_smooth)):
-        tr_val = tr_smooth[i]
-        pdi = (pdm_smooth[i] / tr_val * 100) if tr_val > 0 else 0
-        ndi = (ndm_smooth[i] / tr_val * 100) if tr_val > 0 else 0
-        plus_di_list.append(pdi)
-        minus_di_list.append(ndi)
-        denom = pdi + ndi
-        dx_list.append(abs(pdi - ndi) / denom * 100 if denom > 0 else 0)
-
-    if len(dx_list) < period:
+    d = df.copy()
+    d["ph"], d["pl"], d["pc"] = d["high"].shift(1), d["low"].shift(1), d["close"].shift(1)
+    d["tr"] = d.apply(lambda r: max(r["high"]-r["low"],
+        abs(r["high"]-r["pc"]) if pd.notna(r["pc"]) else 0,
+        abs(r["low"]-r["pc"]) if pd.notna(r["pc"]) else 0), axis=1)
+    d["+dm"] = d.apply(lambda r: max(r["high"]-r["ph"],0)
+        if pd.notna(r["ph"]) and (r["high"]-r["ph"])>(r["pl"]-r["low"]) else 0, axis=1)
+    d["-dm"] = d.apply(lambda r: max(r["pl"]-r["low"],0)
+        if pd.notna(r["pl"]) and (r["pl"]-r["low"])>(r["high"]-r["ph"]) else 0, axis=1)
+    d = d.iloc[1:].reset_index(drop=True)
+    tr_s = [d["tr"].iloc[:period].sum()]
+    pd_s = [d["+dm"].iloc[:period].sum()]
+    nd_s = [d["-dm"].iloc[:period].sum()]
+    for i in range(period, len(d)):
+        tr_s.append(tr_s[-1] - tr_s[-1]/period + d["tr"].iloc[i])
+        pd_s.append(pd_s[-1] - pd_s[-1]/period + d["+dm"].iloc[i])
+        nd_s.append(nd_s[-1] - nd_s[-1]/period + d["-dm"].iloc[i])
+    pdi_l, ndi_l, dx_l = [], [], []
+    for i in range(len(tr_s)):
+        pdi = pd_s[i]/tr_s[i]*100 if tr_s[i]>0 else 0
+        ndi = nd_s[i]/tr_s[i]*100 if tr_s[i]>0 else 0
+        pdi_l.append(pdi); ndi_l.append(ndi)
+        dx_l.append(abs(pdi-ndi)/(pdi+ndi)*100 if (pdi+ndi)>0 else 0)
+    if len(dx_l) < period:
         return None
-
-    adx_list = [sum(dx_list[:period]) / period]
-    for i in range(period, len(dx_list)):
-        adx_list.append((adx_list[-1] * (period - 1) + dx_list[i]) / period)
-
-    return {
-        "adx": round(adx_list[-1], 2),
-        "plus_di": round(plus_di_list[-1], 2),
-        "minus_di": round(minus_di_list[-1], 2),
-    }
+    adx_l = [sum(dx_l[:period])/period]
+    for i in range(period, len(dx_l)):
+        adx_l.append((adx_l[-1]*(period-1)+dx_l[i])/period)
+    return {"adx": round(adx_l[-1],2), "plus_di": round(pdi_l[-1],2), "minus_di": round(ndi_l[-1],2)}
 
 
-def black_scholes_greeks(S, K, T, r, sigma, option_type="CE"):
-    """Compute Black-Scholes price + Greeks for a European option."""
+def bs_greeks(S, K, T, r, sigma, opt="CE"):
     if T <= 0 or sigma <= 0:
-        return {"price": 0, "delta": 0, "gamma": 0, "theta": 0, "vega": 0}
-
-    d1 = (np.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * np.sqrt(T))
-    d2 = d1 - sigma * np.sqrt(T)
-
-    gamma = norm.pdf(d1) / (S * sigma * np.sqrt(T))
-    vega = S * norm.pdf(d1) * np.sqrt(T) / 100
-
-    if option_type == "CE":
-        price = S * norm.cdf(d1) - K * np.exp(-r * T) * norm.cdf(d2)
+        return {"price":0,"delta":0,"gamma":0,"theta":0,"vega":0}
+    d1 = (np.log(S/K)+(r+0.5*sigma**2)*T)/(sigma*np.sqrt(T))
+    d2 = d1 - sigma*np.sqrt(T)
+    gamma = norm.pdf(d1)/(S*sigma*np.sqrt(T))
+    vega = S*norm.pdf(d1)*np.sqrt(T)/100
+    if opt == "CE":
+        price = S*norm.cdf(d1) - K*np.exp(-r*T)*norm.cdf(d2)
         delta = norm.cdf(d1)
-        theta = (-(S * norm.pdf(d1) * sigma) / (2 * np.sqrt(T)) - r * K * np.exp(-r * T) * norm.cdf(d2)) / 365
+        theta = (-(S*norm.pdf(d1)*sigma)/(2*np.sqrt(T)) - r*K*np.exp(-r*T)*norm.cdf(d2))/365
     else:
-        price = K * np.exp(-r * T) * norm.cdf(-d2) - S * norm.cdf(-d1)
-        delta = norm.cdf(d1) - 1
-        theta = (-(S * norm.pdf(d1) * sigma) / (2 * np.sqrt(T)) + r * K * np.exp(-r * T) * norm.cdf(-d2)) / 365
-
-    return {
-        "price": round(price, 2),
-        "delta": round(delta, 3),
-        "gamma": round(gamma, 5),
-        "theta": round(theta, 2),
-        "vega": round(vega, 2),
-    }
+        price = K*np.exp(-r*T)*norm.cdf(-d2) - S*norm.cdf(-d1)
+        delta = norm.cdf(d1)-1
+        theta = (-(S*norm.pdf(d1)*sigma)/(2*np.sqrt(T)) + r*K*np.exp(-r*T)*norm.cdf(-d2))/365
+    return {"price":round(price,2),"delta":round(delta,3),"gamma":round(gamma,5),"theta":round(theta,2),"vega":round(vega,2)}
 
 
-def compute_max_pain(df_chain: pd.DataFrame, diff: float) -> float:
-    """
-    Compute the Max Pain strike — the price at which total option buyer losses
-    are maximised (i.e., where writers keep the most premium).
-    """
+def compute_max_pain(df_chain: pd.DataFrame) -> float:
     strikes = df_chain["Strike"].values
     pain = {}
     for s in strikes:
         total = 0.0
         for _, row in df_chain.iterrows():
-            ce_loss = max(0, s - row["Strike"]) * row["PE OI"]
-            pe_loss = max(0, row["Strike"] - s) * row["CE OI"]
-            total += ce_loss + pe_loss
+            total += max(0, s - row["Strike"]) * row["PE OI"]
+            total += max(0, row["Strike"] - s) * row["CE OI"]
         pain[s] = total
-    if not pain:
-        return 0.0
-    return min(pain, key=pain.get)
+    return min(pain, key=pain.get) if pain else 0.0
 
 
-# ══════════════════════════════════════════════
-#  SIDEBAR SETUP
-# ══════════════════════════════════════════════
+def compute_iv_percentile(candles_df: pd.DataFrame, current_iv: float, window=30) -> float:
+    """IV Percentile: % of last N days where realized vol was below current IV."""
+    if candles_df.empty or len(candles_df) < window + 2:
+        return 50.0  # default mid
+    closes = candles_df["close"].values
+    log_ret = np.diff(np.log(closes))
+    if len(log_ret) < window:
+        return 50.0
+    # Rolling realized vol (annualised)
+    rv_series = []
+    for i in range(len(log_ret) - window + 1):
+        chunk = log_ret[i:i+window]
+        rv = np.std(chunk) * np.sqrt(252) * 100
+        rv_series.append(rv)
+    if not rv_series:
+        return 50.0
+    count_below = sum(1 for rv in rv_series if rv < current_iv * 100)
+    return round(count_below / len(rv_series) * 100, 1)
 
-st.sidebar.markdown('<div class="sidebar-header"><b>🔐 Authentication</b></div>', unsafe_allow_html=True)
-api_token = st.sidebar.text_input(
-    "🔓 Upstox Access Token (Bearer)",
-    type="password",
-    value="",
-    help="Paste the access_token you receive after the OAuth redirect. Tokens expire at midnight IST daily.",
-)
+
+def compute_pnl_heatmap(strategy_legs, lot_size, spot_price, diff):
+    """
+    Compute strategy P&L across a grid of spot prices and days-to-expiry.
+    Each leg: {"strike": K, "type": "CE"/"PE", "action": "BUY"/"SELL", "premium": ltp}
+    """
+    spot_range = np.linspace(spot_price - 8*diff, spot_price + 8*diff, 50)
+    dte_range = np.array([0, 1, 2, 3, 5, 7, 10, 14])  # days to expiry
+
+    pnl_matrix = np.zeros((len(dte_range), len(spot_range)))
+
+    for i, dte in enumerate(dte_range):
+        for j, s in enumerate(spot_range):
+            total = 0.0
+            for leg in strategy_legs:
+                K = leg["strike"]
+                prem = leg["premium"]
+                if dte == 0:
+                    # At expiry — intrinsic only
+                    if leg["type"] == "CE":
+                        val = max(0, s - K)
+                    else:
+                        val = max(0, K - s)
+                else:
+                    T = dte / 365
+                    val = bs_greeks(s, K, T, 0.07, 0.15, leg["type"])["price"]
+
+                if leg["action"] == "BUY":
+                    total += (val - prem)
+                else:
+                    total += (prem - val)
+            pnl_matrix[i, j] = total * lot_size
+    return spot_range, dte_range, pnl_matrix
+
+
+# ═══════════════════════════════════════════════
+#  SIDEBAR
+# ═══════════════════════════════════════════════
+
+st.sidebar.markdown("### 🔐 Authentication")
+api_token = st.sidebar.text_input("Access Token", type="password", value="",
+                                   help="Paste your Upstox OAuth access_token. Expires midnight IST daily.")
 
 st.sidebar.markdown("---")
-selected_index_name = st.sidebar.selectbox("🎯 Select Underlying Index", list(INDICES.keys()))
+selected_index_name = st.sidebar.selectbox("🎯 Underlying Index", list(INDICES.keys()))
+index_meta = INDICES[selected_index_name]
 
 st.sidebar.markdown("---")
-st.sidebar.header("🔧 Alpha System Multipliers")
-iv_override = st.sidebar.slider(
-    "Flat Implied Volatility (%)", min_value=5.0, max_value=80.0, value=15.0, step=0.5
-) / 100
-risk_free_rate = st.sidebar.slider(
-    "Risk-Free Rate (%)", min_value=0.0, max_value=12.0, value=7.0, step=0.1
-) / 100
-strike_depth = st.sidebar.slider(
-    "Strike Range Bracket Around ATM", min_value=3, max_value=15, value=7
-)
+st.sidebar.markdown("### ⚙️ Engine Parameters")
+iv_override = st.sidebar.slider("Manual IV Override (%)", 5.0, 80.0, 15.0, 0.5) / 100
+risk_free_rate = st.sidebar.slider("Risk-Free Rate (%)", 0.0, 12.0, 7.0, 0.1) / 100
+strike_depth = st.sidebar.slider("Strike Depth Around ATM", 3, 15, 7)
 
 st.sidebar.markdown("---")
-auto_refresh = st.sidebar.checkbox("🔄 Enable Auto-Refresh (30s Triggers)", value=False)
+auto_refresh = st.sidebar.checkbox("🔄 Auto-Refresh", value=False)
+refresh_interval = 30
 if auto_refresh:
-    refresh_interval = st.sidebar.slider("Refresh Interval (seconds)", 10, 120, 30, step=5)
+    refresh_interval = st.sidebar.slider("Interval (sec)", 10, 120, 30, 5)
 
-# ══════════════════════════════════════════════
-#  CORE ENGINE EVALUATION LOOP
-# ══════════════════════════════════════════════
+# ═══════════════════════════════════════════════
+#  HEADER
+# ═══════════════════════════════════════════════
+
+st.markdown(f"""
+<div style="display:flex; align-items:center; gap:12px; margin-bottom:4px;">
+    <span style="font-size:28px;">⚡</span>
+    <span style="font-family:'Inter',sans-serif; font-size:22px; font-weight:700;">
+        Upstox Alpha Engine
+    </span>
+    <span style="font-size:12px; color:#64748b; background:rgba(59,130,246,0.12); padding:2px 8px;
+                 border-radius:4px; font-weight:600; margin-left:4px;">v2.0</span>
+    <span style="font-size:13px; color:#94a3b8; margin-left:auto; font-family:'JetBrains Mono',monospace;">
+        {selected_index_name}
+    </span>
+</div>
+""", unsafe_allow_html=True)
+
+# ═══════════════════════════════════════════════
+#  MAIN ENGINE
+# ═══════════════════════════════════════════════
 
 if not api_token:
-    st.info(
-        "💡 Please enter your **Upstox Access Token** in the sidebar to initialize the engine. "
-        "The token is obtained via Upstox OAuth2 flow and expires at midnight IST daily."
-    )
-else:
-    try:
-        client = UpstoxClient(token=api_token)
-        index_meta = INDICES[selected_index_name]
-        diff = index_meta["diff"]
+    st.info("💡 Enter your **Upstox Access Token** in the sidebar to begin. "
+            "Get it via the Upstox OAuth2 flow — it resets at midnight IST.")
+    st.stop()
 
-        # Pull underlying execution matrix values
-        spot_price = client.get_spot_price(index_meta["key"])
-        expiries = client.get_expiries(index_meta["key"])
+try:
+    client = UpstoxClient(token=api_token)
+    diff = index_meta["diff"]
+    lot_size = index_meta["lot"]
 
-        if not expiries:
-            st.error("No valid active derivative contract windows resolved from the broker API.")
-            st.stop()
+    spot_price = client.get_spot_price(index_meta["key"])
+    expiries = client.get_expiries(index_meta["key"])
 
-        selected_expiry = st.sidebar.selectbox("📅 Expiry Window Target", expiries, index=0)
+    if not expiries:
+        st.error("No active derivative contracts found.")
+        st.stop()
 
-        expiry_dt = datetime.strptime(selected_expiry, "%Y-%m-%d").replace(hour=15, minute=30)
-        time_to_expiry_years = (expiry_dt - datetime.now()).total_seconds() / (86400 * 365)
-        time_to_expiry_years = max(time_to_expiry_years, 0.0001)
+    selected_expiry = st.sidebar.selectbox("📅 Expiry", expiries, index=0)
 
-        with st.spinner("Analyzing Index Volatility Structure..."):
-            candles_df = client.get_historical_candles(index_meta["key"], interval="day", days=45)
-            adx_metrics = compute_adx(candles_df)
-            chain_raw = client.get_option_chain(index_meta["key"], selected_expiry)
+    expiry_dt = datetime.strptime(selected_expiry, "%Y-%m-%d").replace(hour=15, minute=30)
+    tte_years = max((expiry_dt - datetime.now()).total_seconds() / (86400*365), 0.0001)
+    tte_days = max(tte_years * 365, 0.01)
 
-        if not chain_raw:
-            st.warning("Empty option chain returned for the selected expiry. The contract may not be active yet.")
-            st.stop()
+    with st.spinner("Loading chain & candles..."):
+        candles_df = client.get_historical_candles(index_meta["key"], "day", 60)
+        adx_metrics = compute_adx(candles_df)
+        chain_raw = client.get_option_chain(index_meta["key"], selected_expiry)
 
-        atm_strike = round(spot_price / diff) * diff
+    if not chain_raw:
+        st.warning("Empty chain for this expiry.")
+        st.stop()
 
-        # ── Build chain DataFrame ──
-        chain_records = []
-        for strike_data in chain_raw:
-            strike_price = float(strike_data.get("strike_price", 0))
-            if abs(strike_price - atm_strike) <= (strike_depth * diff):
-                ce = strike_data.get("call_options", {})
-                pe = strike_data.get("put_options", {})
+    atm_strike = round(spot_price / diff) * diff
 
-                ce_md = ce.get("market_data", {}) if ce else {}
-                pe_md = pe.get("market_data", {}) if pe else {}
+    # ── Build chain records ──
+    records = []
+    for sd in chain_raw:
+        sp = float(sd.get("strike_price", 0))
+        if abs(sp - atm_strike) > strike_depth * diff:
+            continue
+        ce = sd.get("call_options", {}) or {}
+        pe = sd.get("put_options", {}) or {}
+        ce_md = ce.get("market_data", {}) or {}
+        pe_md = pe.get("market_data", {}) or {}
 
-                ce_oi = ce_md.get("oi", 0)
-                pe_oi = pe_md.get("oi", 0)
-                ce_ltp = ce_md.get("ltp", 0)
-                pe_ltp = pe_md.get("ltp", 0)
-                ce_volume = ce_md.get("volume", 0)
-                pe_volume = pe_md.get("volume", 0)
-                ce_iv = ce_md.get("iv", iv_override * 100)  # Use market IV if available
-                pe_iv = pe_md.get("iv", iv_override * 100)
+        ce_oi = ce_md.get("oi", 0)
+        pe_oi = pe_md.get("oi", 0)
+        ce_ltp = ce_md.get("ltp", 0)
+        pe_ltp = pe_md.get("ltp", 0)
+        ce_vol = ce_md.get("volume", 0)
+        pe_vol = pe_md.get("volume", 0)
+        ce_prev_oi = ce_md.get("prev_oi", ce_oi)  # fallback if not available
+        pe_prev_oi = pe_md.get("prev_oi", pe_oi)
+        ce_iv_raw = ce_md.get("iv", 0)
+        pe_iv_raw = pe_md.get("iv", 0)
 
-                # Use market IV for Greeks when available, else fall back to manual override
-                ce_sigma = (ce_iv / 100) if ce_iv and ce_iv > 0 else iv_override
-                pe_sigma = (pe_iv / 100) if pe_iv and pe_iv > 0 else iv_override
+        ce_sigma = (ce_iv_raw/100) if ce_iv_raw and ce_iv_raw > 0 else iv_override
+        pe_sigma = (pe_iv_raw/100) if pe_iv_raw and pe_iv_raw > 0 else iv_override
 
-                ce_greeks = black_scholes_greeks(spot_price, strike_price, time_to_expiry_years, risk_free_rate, ce_sigma, "CE")
-                pe_greeks = black_scholes_greeks(spot_price, strike_price, time_to_expiry_years, risk_free_rate, pe_sigma, "PE")
+        ce_g = bs_greeks(spot_price, sp, tte_years, risk_free_rate, ce_sigma, "CE")
+        pe_g = bs_greeks(spot_price, sp, tte_years, risk_free_rate, pe_sigma, "PE")
 
-                chain_records.append({
-                    "CE OI": ce_oi,
-                    "CE Vol": ce_volume,
-                    "CE IV": round(ce_sigma * 100, 1),
-                    "CE Delta": ce_greeks["delta"],
-                    "CE Gamma": ce_greeks["gamma"],
-                    "CE Theta": ce_greeks["theta"],
-                    "CE Vega": ce_greeks["vega"],
-                    "CE LTP": ce_ltp,
-                    "Strike": strike_price,
-                    "PE LTP": pe_ltp,
-                    "PE Vega": pe_greeks["vega"],
-                    "PE Theta": pe_greeks["theta"],
-                    "PE Gamma": pe_greeks["gamma"],
-                    "PE Delta": pe_greeks["delta"],
-                    "PE IV": round(pe_sigma * 100, 1),
-                    "PE Vol": pe_volume,
-                    "PE OI": pe_oi,
-                })
+        records.append({
+            "CE OI": ce_oi, "CE OI Chg": ce_oi - ce_prev_oi, "CE Vol": ce_vol,
+            "CE IV": round(ce_sigma*100, 1),
+            "CE Delta": ce_g["delta"], "CE Gamma": ce_g["gamma"],
+            "CE Theta": ce_g["theta"], "CE Vega": ce_g["vega"],
+            "CE LTP": ce_ltp,
+            "Strike": sp,
+            "PE LTP": pe_ltp,
+            "PE Vega": pe_g["vega"], "PE Theta": pe_g["theta"],
+            "PE Gamma": pe_g["gamma"], "PE Delta": pe_g["delta"],
+            "PE IV": round(pe_sigma*100, 1),
+            "PE Vol": pe_vol, "PE OI Chg": pe_oi - pe_prev_oi, "PE OI": pe_oi,
+        })
 
-        df_chain = pd.DataFrame(chain_records).sort_values("Strike").reset_index(drop=True)
+    df = pd.DataFrame(records).sort_values("Strike").reset_index(drop=True)
 
-        # ── Derived metrics ──
-        total_ce_oi = df_chain["CE OI"].sum()
-        total_pe_oi = df_chain["PE OI"].sum()
-        pcr = round(total_pe_oi / total_ce_oi, 2) if total_ce_oi > 0 else 0
+    # ── Derived metrics ──
+    total_ce_oi = df["CE OI"].sum()
+    total_pe_oi = df["PE OI"].sum()
+    pcr = round(total_pe_oi / total_ce_oi, 2) if total_ce_oi > 0 else 0
+    max_pain = compute_max_pain(df)
+    resistance = df.loc[df["CE OI"].idxmax(), "Strike"] if not df.empty else atm_strike
+    support = df.loc[df["PE OI"].idxmax(), "Strike"] if not df.empty else atm_strike
 
-        max_pain_strike = compute_max_pain(df_chain, diff)
+    # IV Percentile
+    atm_row = df[df["Strike"] == atm_strike]
+    atm_iv = float(atm_row.iloc[0]["CE IV"]) if not atm_row.empty else iv_override * 100
+    iv_pct = compute_iv_percentile(candles_df, atm_iv / 100, window=20)
 
-        # Identify resistance (highest CE OI) and support (highest PE OI) strikes
-        resistance_strike = df_chain.loc[df_chain["CE OI"].idxmax(), "Strike"] if not df_chain.empty else atm_strike
-        support_strike = df_chain.loc[df_chain["PE OI"].idxmax(), "Strike"] if not df_chain.empty else atm_strike
+    # PCR history in session state for sparkline
+    if "pcr_history" not in st.session_state:
+        st.session_state.pcr_history = []
+    st.session_state.pcr_history.append({"time": datetime.now().strftime("%H:%M:%S"), "pcr": pcr})
+    if len(st.session_state.pcr_history) > 60:
+        st.session_state.pcr_history = st.session_state.pcr_history[-60:]
 
-        # ── Sentiment classification ──
-        sentiment = "Neutral Matrix"
-        card_bg = "background: linear-gradient(135deg, #64748b, #475569);"
-        if pcr >= 1.25:
-            sentiment = "Strong Bullish Bias"
-            card_bg = "background: linear-gradient(135deg, #15803d, #166534);"
-        elif pcr > 1.05:
-            sentiment = "Mildly Bullish Sentiment"
-            card_bg = "background: linear-gradient(135deg, #22c55e, #15803d);"
-        elif pcr <= 0.75:
-            sentiment = "Strong Bearish Bias"
-            card_bg = "background: linear-gradient(135deg, #b91c1c, #991b1b);"
-        elif pcr < 0.95:
-            sentiment = "Mildly Bearish Sentiment"
-            card_bg = "background: linear-gradient(135deg, #ef4444, #b91c1c);"
+    # Sentiment
+    if pcr >= 1.25:
+        sentiment, sent_color = "STRONG BULLISH", "#15803d"
+        card_bg = "linear-gradient(135deg, #15803d, #166534)"
+    elif pcr > 1.05:
+        sentiment, sent_color = "MILDLY BULLISH", "#22c55e"
+        card_bg = "linear-gradient(135deg, #065f46, #064e3b)"
+    elif pcr <= 0.75:
+        sentiment, sent_color = "STRONG BEARISH", "#dc2626"
+        card_bg = "linear-gradient(135deg, #991b1b, #7f1d1d)"
+    elif pcr < 0.95:
+        sentiment, sent_color = "MILDLY BEARISH", "#ef4444"
+        card_bg = "linear-gradient(135deg, #b91c1c, #991b1b)"
+    else:
+        sentiment, sent_color = "NEUTRAL", "#64748b"
+        card_bg = "linear-gradient(135deg, #475569, #334155)"
 
-        # ══════════════════════════════════════════════
-        #  TOP KPI METRICS ROW
-        # ══════════════════════════════════════════════
+    # σ bounds
+    std_price = spot_price * iv_override * np.sqrt(tte_years)
+    lo1 = spot_price - std_price
+    hi1 = spot_price + std_price
+    lo2 = spot_price - 2*std_price
+    hi2 = spot_price + 2*std_price
 
-        m_col1, m_col2, m_col3, m_col4, m_col5 = st.columns(5)
-        m_col1.metric("Underlying Spot Price", f"₹ {spot_price:,.2f}")
-        m_col2.metric("Calculated ATM Level", f"{atm_strike:,.0f}")
-        m_col3.metric("Aggregate PCR (OI)", f"{pcr}")
-        m_col4.metric("Max Pain Strike", f"{max_pain_strike:,.0f}")
-        if adx_metrics:
-            m_col5.metric(
-                "ADX (14 Period)",
-                f"{adx_metrics['adx']}",
-                f"+DI {adx_metrics['plus_di']} / -DI {adx_metrics['minus_di']}",
-            )
-        else:
-            m_col5.metric("ADX (14 Period)", "Insufficient Data")
+    # Strategy strikes
+    ic_sell_put = round(lo1 / diff) * diff
+    ic_sell_call = round(hi1 / diff) * diff
+    ic_buy_put = ic_sell_put - diff
+    ic_buy_call = ic_sell_call + diff
 
-        # ── Sentiment card ──
-        st.markdown(f"""
-        <div class="direction-card" style="{card_bg}">
-            <div class="score-label">AUTOMATED STRUCTURAL TREND SIGNAL</div>
-            <div class="direction-text">{sentiment}</div>
-            <div class="sentiment-text">
-                Put OI: {total_pe_oi:,.0f} &nbsp;|&nbsp; Call OI: {total_ce_oi:,.0f}
-                &nbsp;&nbsp;•&nbsp;&nbsp;
-                <span class="sr-badge sr-support">Support: {support_strike:,.0f}</span>
-                <span class="sr-badge sr-resist">Resistance: {resistance_strike:,.0f}</span>
-                <span class="sr-badge sr-maxpain">Max Pain: {max_pain_strike:,.0f}</span>
-            </div>
+    # ═══════════════════════════════════════════════
+    #  TOP KPI ROW
+    # ═══════════════════════════════════════════════
+
+    k1, k2, k3, k4, k5, k6 = st.columns(6)
+    k1.metric("Spot", f"₹{spot_price:,.2f}")
+    k2.metric("ATM", f"{atm_strike:,.0f}")
+    k3.metric("PCR", f"{pcr}")
+    k4.metric("Max Pain", f"{max_pain:,.0f}")
+    adx_val = adx_metrics["adx"] if adx_metrics else None
+    k5.metric("ADX (14)", f"{adx_val}" if adx_val else "—",
+              f"+DI {adx_metrics['plus_di']}/-DI {adx_metrics['minus_di']}" if adx_metrics else None)
+    k6.metric("DTE", f"{tte_days:.1f} days")
+
+    # ── IV Percentile Gauge ──
+    iv_color = "#22c55e" if iv_pct < 30 else "#f59e0b" if iv_pct < 70 else "#ef4444"
+    st.markdown(f"""
+    <div style="display:flex; align-items:center; gap:14px; margin:8px 0 4px 0;">
+        <span style="font-size:11px; color:#64748b; text-transform:uppercase; letter-spacing:1.5px; font-weight:600; min-width:110px;">IV Percentile</span>
+        <div class="iv-gauge-bar" style="flex:1;">
+            <div class="iv-gauge-marker" style="left:{min(iv_pct, 100)}%;"></div>
         </div>
-        """, unsafe_allow_html=True)
+        <span class="iv-pct-label" style="color:{iv_color};">{iv_pct:.0f}%</span>
+        <span style="font-size:11px; color:#64748b;">ATM IV: {atm_iv:.1f}%</span>
+    </div>
+    """, unsafe_allow_html=True)
 
-        # ══════════════════════════════════════════════
-        #  NORMAL DISTRIBUTION PRICE PREDICTION
-        # ══════════════════════════════════════════════
+    # ── Sentiment Card ──
+    st.markdown(f"""
+    <div class="signal-card" style="background:{card_bg};">
+        <div class="signal-label">Structural Trend Signal</div>
+        <div class="signal-value">{sentiment}</div>
+        <div class="signal-sub">
+            Put OI: {total_pe_oi:,.0f} &nbsp;·&nbsp; Call OI: {total_ce_oi:,.0f}
+            &nbsp;&nbsp;
+            <span class="badge badge-green">Support {support:,.0f}</span>
+            <span class="badge badge-red">Resistance {resistance:,.0f}</span>
+            <span class="badge badge-purple">Max Pain {max_pain:,.0f}</span>
+            <span class="badge badge-amber">IV Pct {iv_pct:.0f}%</span>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
-        st.subheader("🎯 Statistical Price Prediction Range (Normal Distribution Model)")
+    # ═══════════════════════════════════════════════
+    #  TABBED LAYOUT
+    # ═══════════════════════════════════════════════
 
-        std_dev_price = spot_price * iv_override * np.sqrt(time_to_expiry_years)
-        lower_1sigma = spot_price - std_dev_price
-        upper_1sigma = spot_price + std_dev_price
-        lower_2sigma = spot_price - (2 * std_dev_price)
-        upper_2sigma = spot_price + (2 * std_dev_price)
+    tab_dash, tab_chain, tab_strat, tab_charts = st.tabs([
+        "📊 Dashboard", "📋 Options Chain", "🛡️ Strategy Builder", "📈 Charts"
+    ])
 
-        p_col1, p_col2, p_col3 = st.columns(3)
-        p_col1.metric("1σ Low Bound (68.2%)", f"₹ {lower_1sigma:,.2f}")
-        p_col2.metric("🎯 Median Expected Spot", f"₹ {spot_price:,.2f}")
-        p_col3.metric("1σ High Bound (68.2%)", f"₹ {upper_1sigma:,.2f}")
+    # ──────────────────────────────────
+    #  TAB 1: DASHBOARD
+    # ──────────────────────────────────
+    with tab_dash:
 
-        ic_sell_put = round(lower_1sigma / diff) * diff
-        ic_sell_call = round(upper_1sigma / diff) * diff
-        ic_buy_put = ic_sell_put - diff
-        ic_buy_call = ic_sell_call + diff
+        # Normal distribution
+        st.markdown("#### 🎯 Statistical Price Forecast")
+        pc1, pc2, pc3, pc4 = st.columns(4)
+        pc1.metric("2σ Low (95.4%)", f"₹{lo2:,.0f}")
+        pc2.metric("1σ Low (68.2%)", f"₹{lo1:,.0f}")
+        pc3.metric("1σ High (68.2%)", f"₹{hi1:,.0f}")
+        pc4.metric("2σ High (95.4%)", f"₹{hi2:,.0f}")
 
-        fig_bell, ax_bell = plt.subplots(figsize=(12, 4.5))
-        x_axis = np.linspace(spot_price - 3.5 * std_dev_price, spot_price + 3.5 * std_dev_price, 500)
-        y_axis = norm.pdf(x_axis, spot_price, std_dev_price)
+        # Bell curve with Plotly
+        x = np.linspace(spot_price - 3.5*std_price, spot_price + 3.5*std_price, 400)
+        y = norm.pdf(x, spot_price, std_price)
 
-        ax_bell.plot(x_axis, y_axis, color="#0f172a", linewidth=2, label="Probability Density Function")
-        ax_bell.fill_between(
-            x_axis, y_axis,
-            where=(x_axis >= lower_1sigma) & (x_axis <= upper_1sigma),
-            color="#38bdf8", alpha=0.35, label="68.2% Confidence Zone (1σ)",
-        )
-        ax_bell.fill_between(
-            x_axis, y_axis,
-            where=((x_axis >= lower_2sigma) & (x_axis < lower_1sigma)) |
-                  ((x_axis > upper_1sigma) & (x_axis <= upper_2sigma)),
-            color="#0284c7", alpha=0.15, label="95.4% Confidence Zone (2σ)",
-        )
+        fig_bell = go.Figure()
+        # 2σ fill
+        mask_2s = (x >= lo2) & (x <= hi2)
+        fig_bell.add_trace(go.Scatter(x=x[mask_2s], y=y[mask_2s], fill="tozeroy",
+            fillcolor="rgba(59,130,246,0.08)", line=dict(width=0), name="95.4% (2σ)", showlegend=True))
+        # 1σ fill
+        mask_1s = (x >= lo1) & (x <= hi1)
+        fig_bell.add_trace(go.Scatter(x=x[mask_1s], y=y[mask_1s], fill="tozeroy",
+            fillcolor="rgba(56,189,248,0.22)", line=dict(width=0), name="68.2% (1σ)", showlegend=True))
+        # PDF line
+        fig_bell.add_trace(go.Scatter(x=x, y=y, mode="lines",
+            line=dict(color="#e2e8f0", width=2), name="PDF"))
+        # Vertical lines
+        for val, clr, nm, dash in [
+            (spot_price, "#f1f5f9", "Spot", "solid"),
+            (max_pain, "#8b5cf6", "Max Pain", "dashdot"),
+            (support, "#22c55e", "Support", "dot"),
+            (resistance, "#ef4444", "Resistance", "dot"),
+        ]:
+            fig_bell.add_vline(x=val, line=dict(color=clr, width=1.5, dash=dash),
+                               annotation_text=nm, annotation_position="top")
 
-        ax_bell.axvline(spot_price, color="#0f172a", linestyle="-", linewidth=1.5,
-                        label=f"Current Spot ({spot_price:,.1f})")
-        ax_bell.axvline(max_pain_strike, color="#7c3aed", linestyle="-.", linewidth=1.5,
-                        label=f"Max Pain ({max_pain_strike:,.0f})")
-        ax_bell.axvline(ic_sell_put, color="#e11d48", linestyle=":", linewidth=2,
-                        label=f"IC Sell Floor ({ic_sell_put})")
-        ax_bell.axvline(ic_sell_call, color="#16a34a", linestyle=":", linewidth=2,
-                        label=f"IC Sell Cap ({ic_sell_call})")
+        fig_bell.update_layout(**PLOTLY_LAYOUT, height=320,
+            title=dict(text=f"Expiry Forecast — {selected_index_name} ({selected_expiry})", font=dict(size=13)),
+            yaxis_title="Probability Density", xaxis_title="Settlement Price")
+        st.plotly_chart(fig_bell, use_container_width=True)
 
-        ax_bell.set_title(
-            f"Expiry Statistical Forecast — {selected_index_name} ({selected_expiry})",
-            fontsize=11, fontweight="bold",
-        )
-        ax_bell.set_xlabel("Predicted Index Settlement Price", fontsize=9)
-        ax_bell.set_ylabel("Probability Density", fontsize=9)
-        ax_bell.legend(loc="upper right", fontsize=8)
-        ax_bell.grid(True, linestyle=":", alpha=0.4)
-        st.pyplot(fig_bell)
-        plt.close(fig_bell)
+        # PCR Trend sparkline
+        if len(st.session_state.pcr_history) > 1:
+            st.markdown("#### 📉 PCR Trend (Session)")
+            pcr_df = pd.DataFrame(st.session_state.pcr_history)
+            fig_pcr = go.Figure()
+            fig_pcr.add_trace(go.Scatter(x=pcr_df["time"], y=pcr_df["pcr"], mode="lines+markers",
+                line=dict(color="#3b82f6", width=2), marker=dict(size=4), name="PCR"))
+            fig_pcr.add_hline(y=1.0, line=dict(color="#64748b", dash="dash", width=1), annotation_text="Neutral")
+            fig_pcr.update_layout(**PLOTLY_LAYOUT, height=200,
+                yaxis_title="PCR", xaxis_title="Time")
+            st.plotly_chart(fig_pcr, use_container_width=True)
 
-        # ══════════════════════════════════════════════
-        #  STRATEGY PLAYBOOK
-        # ══════════════════════════════════════════════
+        # OI Change summary
+        st.markdown("#### 🔄 OI Change (Current vs Previous)")
+        oc1, oc2 = st.columns(2)
+        with oc1:
+            top_ce_buildup = df.nlargest(5, "CE OI Chg")[["Strike", "CE OI", "CE OI Chg"]]
+            st.markdown("**Top Call OI Build-up**")
+            st.dataframe(top_ce_buildup.style.format({"Strike":"{:,.0f}","CE OI":"{:,.0f}","CE OI Chg":"{:+,.0f}"}),
+                         use_container_width=True, hide_index=True)
+        with oc2:
+            top_pe_buildup = df.nlargest(5, "PE OI Chg")[["Strike", "PE OI", "PE OI Chg"]]
+            st.markdown("**Top Put OI Build-up**")
+            st.dataframe(top_pe_buildup.style.format({"Strike":"{:,.0f}","PE OI":"{:,.0f}","PE OI Chg":"{:+,.0f}"}),
+                         use_container_width=True, hide_index=True)
 
-        st.subheader("🛡️ Automated Statistical Strategy Playbook")
+    # ──────────────────────────────────
+    #  TAB 2: OPTIONS CHAIN
+    # ──────────────────────────────────
+    with tab_chain:
+        st.markdown("#### Live Options Chain — Greeks & Market Data")
 
-        adx_val = adx_metrics["adx"] if adx_metrics else 15
-        if adx_val > 25:
-            suggested_strategy = "Switch to Debit Spreads / Long Options (Trending Market)"
-        elif iv_override > 0.22:
-            suggested_strategy = "Iron Butterfly"
+        # Build a color-mapped HTML table for better visual density
+        display_cols = ["CE OI","CE OI Chg","CE Vol","CE IV","CE Delta","CE Theta","CE LTP",
+                        "Strike",
+                        "PE LTP","PE Theta","PE Delta","PE IV","PE Vol","PE OI Chg","PE OI"]
+        df_display = df[display_cols].copy()
+
+        def oi_bg(val, max_val):
+            if max_val == 0: return ""
+            intensity = min(abs(val)/max_val, 1.0)
+            return f"rgba(59,130,246,{intensity*0.25})"
+
+        def chg_color(val):
+            if val > 0: return "color: #4ade80;"
+            elif val < 0: return "color: #f87171;"
+            return ""
+
+        max_oi = max(df["CE OI"].max(), df["PE OI"].max(), 1)
+
+        def style_chain(row):
+            s = row["Strike"]
+            styles = [""] * len(row)
+            si = list(row.index)
+
+            # ATM highlight
+            if s == atm_strike:
+                styles = ["background-color: rgba(245,158,11,0.15); font-weight:700;"] * len(row)
+
+            # OI intensity on CE OI and PE OI columns
+            for col_name in ["CE OI", "PE OI"]:
+                idx = si.index(col_name)
+                intensity = min(abs(row[col_name])/max_oi, 1.0) if max_oi > 0 else 0
+                bg = f"rgba(59,130,246,{intensity*0.3})"
+                styles[idx] += f" background-color: {bg};"
+
+            # OI Change coloring
+            for col_name in ["CE OI Chg", "PE OI Chg"]:
+                idx = si.index(col_name)
+                v = row[col_name]
+                if v > 0:
+                    styles[idx] += " color: #4ade80;"
+                elif v < 0:
+                    styles[idx] += " color: #f87171;"
+
+            return styles
+
+        styled = df_display.style.apply(style_chain, axis=1).format({
+            "CE OI":"{:,.0f}", "CE OI Chg":"{:+,.0f}", "CE Vol":"{:,.0f}", "CE IV":"{:.1f}",
+            "CE Delta":"{:.3f}", "CE Theta":"{:.2f}", "CE LTP":"₹{:.2f}",
+            "Strike":"{:,.0f}",
+            "PE LTP":"₹{:.2f}", "PE Theta":"{:.2f}", "PE Delta":"{:.3f}", "PE IV":"{:.1f}",
+            "PE Vol":"{:,.0f}", "PE OI Chg":"{:+,.0f}", "PE OI":"{:,.0f}",
+        })
+        st.dataframe(styled, use_container_width=True, height=500)
+
+    # ──────────────────────────────────
+    #  TAB 3: STRATEGY BUILDER
+    # ──────────────────────────────────
+    with tab_strat:
+        st.markdown("#### 🛡️ Strategy Playbook")
+
+        # Recommendation
+        adx_v = adx_metrics["adx"] if adx_metrics else 15
+        if adx_v > 25:
+            rec = "Directional: Debit Spreads / Long Options"
+            rec_icon = "🚀"
+        elif iv_pct > 70:
+            rec = "High IV: Iron Butterfly / Short Straddle"
+            rec_icon = "🦋"
+        elif iv_pct < 30:
+            rec = "Low IV: Long Straddle / Calendar Spread"
+            rec_icon = "📈"
         else:
-            suggested_strategy = "Iron Condor"
+            rec = "Range-bound: Iron Condor"
+            rec_icon = "📊"
 
-        st.info(
-            f"📊 **Matrix Recommendation**: ADX = **{adx_val}**, IV = **{iv_override*100:.1f}%** "
-            f"→ Suggested setup: **{suggested_strategy}**"
-        )
+        st.info(f"{rec_icon} **Engine Recommendation**: ADX={adx_v}, IV Pct={iv_pct:.0f}% → **{rec}**")
 
-        selected_strategy_view = st.selectbox(
-            "⚡ Select Active Strategy Playbook View",
-            ["Iron Condor", "Short Straddle", "Iron Butterfly"],
-        )
+        strat_choice = st.selectbox("Select Strategy", ["Iron Condor", "Short Straddle", "Iron Butterfly", "Bull Put Spread", "Bear Call Spread"])
 
-        def get_prices(strike):
-            """Look up live CE & PE LTP from the chain for a given strike."""
-            match = df_chain[df_chain["Strike"] == strike]
-            if not match.empty:
-                return float(match.iloc[0]["CE LTP"]), float(match.iloc[0]["PE LTP"])
+        def get_ltp(strike):
+            m = df[df["Strike"] == strike]
+            if not m.empty:
+                return float(m.iloc[0]["CE LTP"]), float(m.iloc[0]["PE LTP"])
             return 0.0, 0.0
 
-        if selected_strategy_view == "Iron Condor":
-            c_sell_ce, _ = get_prices(ic_sell_call)
-            _, p_sell_pe = get_prices(ic_sell_put)
-            c_buy_ce, _ = get_prices(ic_buy_call)
-            _, p_buy_pe = get_prices(ic_buy_put)
+        legs = []
 
-            net_credit = (c_sell_ce + p_sell_pe) - (c_buy_ce + p_buy_pe)
-            net_credit = max(net_credit, 0.0)
-            max_risk = diff - net_credit if net_credit > 0 else diff
-
+        if strat_choice == "Iron Condor":
+            c_sell_ce, _ = get_ltp(ic_sell_call)
+            _, p_sell_pe = get_ltp(ic_sell_put)
+            c_buy_ce, _ = get_ltp(ic_buy_call)
+            _, p_buy_pe = get_ltp(ic_buy_put)
+            net = max((c_sell_ce + p_sell_pe) - (c_buy_ce + p_buy_pe), 0)
+            max_risk = diff - net if net > 0 else diff
+            legs = [
+                {"strike":ic_buy_put,"type":"PE","action":"BUY","premium":p_buy_pe},
+                {"strike":ic_sell_put,"type":"PE","action":"SELL","premium":p_sell_pe},
+                {"strike":ic_sell_call,"type":"CE","action":"SELL","premium":c_sell_ce},
+                {"strike":ic_buy_call,"type":"CE","action":"BUY","premium":c_buy_ce},
+            ]
             st.markdown(f"""
-            <div class="playbook-card">
-                <div class="playbook-title">📊 Iron Condor (Risk-Defined)</div>
-                <strong>Legs:</strong><br>
-                • Buy 1x <b>{ic_buy_put} PE</b> @ ₹{p_buy_pe:.2f}<br>
-                • Sell 1x <b>{ic_sell_put} PE</b> @ ₹{p_sell_pe:.2f}<br>
-                • Sell 1x <b>{ic_sell_call} CE</b> @ ₹{c_sell_ce:.2f}<br>
-                • Buy 1x <b>{ic_buy_call} CE</b> @ ₹{c_buy_ce:.2f}<br><br>
-                <span style='color: #16a34a; font-size: 16px; font-weight: bold;'>
-                    💰 Net Credit: ₹{net_credit:,.2f} / lot
-                </span>
-                &nbsp;&nbsp;
-                <span style='color: #dc2626; font-size: 13px;'>
-                    Max Risk: ₹{max_risk:,.2f} / lot
-                </span>
+            <div class="strat-card">
+                <div class="strat-title" style="color:#3b82f6;">📊 Iron Condor</div>
+                <div class="strat-leg">
+                    BUY 1× <b>{ic_buy_put} PE</b> @ ₹{p_buy_pe:.2f}<br>
+                    SELL 1× <b>{ic_sell_put} PE</b> @ ₹{p_sell_pe:.2f}<br>
+                    SELL 1× <b>{ic_sell_call} CE</b> @ ₹{c_sell_ce:.2f}<br>
+                    BUY 1× <b>{ic_buy_call} CE</b> @ ₹{c_buy_ce:.2f}
+                </div>
+                <div class="strat-profit" style="color:#4ade80;">
+                    💰 Net Credit: ₹{net:,.2f}/lot &nbsp;(₹{net*lot_size:,.0f} total)
+                </div>
+                <div style="color:#f87171; font-size:13px; margin-top:4px;">
+                    Max Risk: ₹{max_risk:,.2f}/lot &nbsp;(₹{max_risk*lot_size:,.0f} total)
+                </div>
             </div>
             """, unsafe_allow_html=True)
 
-        elif selected_strategy_view == "Short Straddle":
-            c_sell_ce, p_sell_pe = get_prices(atm_strike)
-            max_profit = c_sell_ce + p_sell_pe
-            upper_be = atm_strike + max_profit
-            lower_be = atm_strike - max_profit
-
+        elif strat_choice == "Short Straddle":
+            c_atm, p_atm = get_ltp(atm_strike)
+            net = c_atm + p_atm
+            upper_be = atm_strike + net
+            lower_be = atm_strike - net
+            legs = [
+                {"strike":atm_strike,"type":"CE","action":"SELL","premium":c_atm},
+                {"strike":atm_strike,"type":"PE","action":"SELL","premium":p_atm},
+            ]
             st.markdown(f"""
-            <div class="playbook-card">
-                <div class="playbook-title">🔥 Short Straddle (Max Premium Harvest)</div>
-                <strong>Legs:</strong><br>
-                • Sell 1x <b>{atm_strike} CE</b> @ ₹{c_sell_ce:.2f}<br>
-                • Sell 1x <b>{atm_strike} PE</b> @ ₹{p_sell_pe:.2f}<br><br>
-                <span style='color: #16a34a; font-size: 16px; font-weight: bold;'>
-                    💰 Net Credit: ₹{max_profit:,.2f} / lot
+            <div class="strat-card">
+                <div class="strat-title" style="color:#f59e0b;">🔥 Short Straddle</div>
+                <div class="strat-leg">
+                    SELL 1× <b>{atm_strike} CE</b> @ ₹{c_atm:.2f}<br>
+                    SELL 1× <b>{atm_strike} PE</b> @ ₹{p_atm:.2f}
+                </div>
+                <div class="strat-profit" style="color:#4ade80;">
+                    💰 Net Credit: ₹{net:,.2f}/lot &nbsp;(₹{net*lot_size:,.0f} total)
+                </div>
+                <div style="font-size:13px; color:#94a3b8; margin-top:4px;">
+                    Breakevens: ₹{lower_be:,.0f} – ₹{upper_be:,.0f} &nbsp;⚠️ Unlimited risk
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        elif strat_choice == "Iron Butterfly":
+            c_atm, p_atm = get_ltp(atm_strike)
+            c_buy_ce, _ = get_ltp(ic_buy_call)
+            _, p_buy_pe = get_ltp(ic_buy_put)
+            net = max((c_atm + p_atm) - (c_buy_ce + p_buy_pe), 0)
+            legs = [
+                {"strike":ic_buy_put,"type":"PE","action":"BUY","premium":p_buy_pe},
+                {"strike":atm_strike,"type":"PE","action":"SELL","premium":p_atm},
+                {"strike":atm_strike,"type":"CE","action":"SELL","premium":c_atm},
+                {"strike":ic_buy_call,"type":"CE","action":"BUY","premium":c_buy_ce},
+            ]
+            st.markdown(f"""
+            <div class="strat-card">
+                <div class="strat-title" style="color:#8b5cf6;">🦋 Iron Butterfly</div>
+                <div class="strat-leg">
+                    BUY 1× <b>{ic_buy_put} PE</b> @ ₹{p_buy_pe:.2f}<br>
+                    SELL 1× <b>{atm_strike} PE</b> @ ₹{p_atm:.2f}<br>
+                    SELL 1× <b>{atm_strike} CE</b> @ ₹{c_atm:.2f}<br>
+                    BUY 1× <b>{ic_buy_call} CE</b> @ ₹{c_buy_ce:.2f}
+                </div>
+                <div class="strat-profit" style="color:#4ade80;">
+                    💰 Net Credit: ₹{net:,.2f}/lot &nbsp;(₹{net*lot_size:,.0f} total)
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        elif strat_choice == "Bull Put Spread":
+            sell_strike = ic_sell_put
+            buy_strike = ic_buy_put
+            _, p_sell = get_ltp(sell_strike)
+            _, p_buy = get_ltp(buy_strike)
+            net = max(p_sell - p_buy, 0)
+            max_risk = diff - net
+            legs = [
+                {"strike":buy_strike,"type":"PE","action":"BUY","premium":p_buy},
+                {"strike":sell_strike,"type":"PE","action":"SELL","premium":p_sell},
+            ]
+            st.markdown(f"""
+            <div class="strat-card">
+                <div class="strat-title" style="color:#22c55e;">📈 Bull Put Spread</div>
+                <div class="strat-leg">
+                    SELL 1× <b>{sell_strike} PE</b> @ ₹{p_sell:.2f}<br>
+                    BUY 1× <b>{buy_strike} PE</b> @ ₹{p_buy:.2f}
+                </div>
+                <div class="strat-profit" style="color:#4ade80;">
+                    💰 Net Credit: ₹{net:,.2f}/lot &nbsp;(₹{net*lot_size:,.0f} total)
+                </div>
+                <div style="color:#f87171; font-size:13px; margin-top:4px;">
+                    Max Risk: ₹{max_risk:,.2f}/lot
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        elif strat_choice == "Bear Call Spread":
+            sell_strike = ic_sell_call
+            buy_strike = ic_buy_call
+            c_sell, _ = get_ltp(sell_strike)
+            c_buy, _ = get_ltp(buy_strike)
+            net = max(c_sell - c_buy, 0)
+            max_risk = diff - net
+            legs = [
+                {"strike":sell_strike,"type":"CE","action":"SELL","premium":c_sell},
+                {"strike":buy_strike,"type":"CE","action":"BUY","premium":c_buy},
+            ]
+            st.markdown(f"""
+            <div class="strat-card">
+                <div class="strat-title" style="color:#ef4444;">📉 Bear Call Spread</div>
+                <div class="strat-leg">
+                    SELL 1× <b>{sell_strike} CE</b> @ ₹{c_sell:.2f}<br>
+                    BUY 1× <b>{buy_strike} CE</b> @ ₹{c_buy:.2f}
+                </div>
+                <div class="strat-profit" style="color:#4ade80;">
+                    💰 Net Credit: ₹{net:,.2f}/lot &nbsp;(₹{net*lot_size:,.0f} total)
+                </div>
+                <div style="color:#f87171; font-size:13px; margin-top:4px;">
+                    Max Risk: ₹{max_risk:,.2f}/lot
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        # ── P&L Heatmap ──
+        if legs:
+            st.markdown("#### 🗺️ P&L Heatmap (Spot × Days to Expiry)")
+            spot_arr, dte_arr, pnl_mat = compute_pnl_heatmap(legs, lot_size, spot_price, diff)
+
+            # Custom red-white-green colorscale
+            colorscale = [
+                [0, "#dc2626"],
+                [0.35, "#fca5a5"],
+                [0.5, "#1e293b"],
+                [0.65, "#86efac"],
+                [1, "#16a34a"],
+            ]
+
+            fig_hm = go.Figure(data=go.Heatmap(
+                z=pnl_mat,
+                x=np.round(spot_arr, 0),
+                y=[f"DTE {int(d)}" for d in dte_arr],
+                colorscale=colorscale,
+                zmid=0,
+                text=np.round(pnl_mat, 0).astype(int),
+                texttemplate="%{text}",
+                textfont=dict(size=9),
+                hovertemplate="Spot: %{x}<br>%{y}<br>P&L: ₹%{z:,.0f}<extra></extra>",
+                colorbar=dict(title="P&L (₹)", tickformat=","),
+            ))
+            fig_hm.update_layout(**PLOTLY_LAYOUT, height=350,
+                title=dict(text=f"{strat_choice} P&L — {lot_size} lot", font=dict(size=13)),
+                xaxis_title="Spot Price", yaxis_title="")
+            fig_hm.add_vline(x=spot_price, line=dict(color="#f1f5f9", width=1.5, dash="dash"),
+                             annotation_text="Current", annotation_position="top")
+            st.plotly_chart(fig_hm, use_container_width=True)
+
+            # Payoff at expiry line chart
+            st.markdown("#### 📐 Payoff at Expiry")
+            expiry_pnl = pnl_mat[0]  # DTE 0 row
+            fig_payoff = go.Figure()
+            # Color fill: green above 0, red below
+            fig_payoff.add_trace(go.Scatter(
+                x=spot_arr, y=expiry_pnl, mode="lines",
+                line=dict(color="#e2e8f0", width=2), name="P&L",
+                fill="tozeroy",
+                fillcolor="rgba(34,197,94,0.15)",
+            ))
+            # Overlay red below zero
+            neg_pnl = np.where(expiry_pnl < 0, expiry_pnl, 0)
+            fig_payoff.add_trace(go.Scatter(
+                x=spot_arr, y=neg_pnl, mode="lines",
+                line=dict(color="rgba(0,0,0,0)", width=0),
+                fill="tozeroy", fillcolor="rgba(239,68,68,0.15)",
+                showlegend=False,
+            ))
+            fig_payoff.add_hline(y=0, line=dict(color="#475569", width=1))
+            fig_payoff.add_vline(x=spot_price, line=dict(color="#3b82f6", dash="dash", width=1),
+                                 annotation_text="Spot")
+            fig_payoff.update_layout(**PLOTLY_LAYOUT, height=280,
+                title=dict(text="Expiry Payoff Profile", font=dict(size=13)),
+                xaxis_title="Spot at Expiry", yaxis_title="P&L (₹)")
+            st.plotly_chart(fig_payoff, use_container_width=True)
+
+    # ──────────────────────────────────
+    #  TAB 4: CHARTS
+    # ──────────────────────────────────
+    with tab_charts:
+
+        # OI Distribution
+        st.markdown("#### 📊 Open Interest Distribution")
+        fig_oi = go.Figure()
+        fig_oi.add_trace(go.Bar(
+            x=df["Strike"], y=df["CE OI"], name="Call OI",
+            marker=dict(color="#ef4444", opacity=0.85, line=dict(color="#b91c1c", width=0.5)),
+            offsetgroup=0,
+        ))
+        fig_oi.add_trace(go.Bar(
+            x=df["Strike"], y=df["PE OI"], name="Put OI",
+            marker=dict(color="#22c55e", opacity=0.85, line=dict(color="#15803d", width=0.5)),
+            offsetgroup=1,
+        ))
+        fig_oi.add_vline(x=atm_strike, line=dict(color="#f1f5f9", dash="dash", width=1), annotation_text="ATM")
+        fig_oi.add_vline(x=max_pain, line=dict(color="#8b5cf6", dash="dashdot", width=1), annotation_text="Max Pain")
+        fig_oi.update_layout(**PLOTLY_LAYOUT, height=380, barmode="group",
+            title=dict(text=f"OI Distribution — {selected_index_name} ({selected_expiry})", font=dict(size=13)),
+            xaxis_title="Strike", yaxis_title="Open Interest")
+        st.plotly_chart(fig_oi, use_container_width=True)
+
+        # OI Change chart
+        st.markdown("#### 🔄 OI Change (Build-up / Unwinding)")
+        fig_oichg = make_subplots(rows=1, cols=1)
+        ce_chg_colors = ["#ef4444" if v >= 0 else "#7f1d1d" for v in df["CE OI Chg"]]
+        pe_chg_colors = ["#22c55e" if v >= 0 else "#14532d" for v in df["PE OI Chg"]]
+        fig_oichg.add_trace(go.Bar(x=df["Strike"]-diff*0.15, y=df["CE OI Chg"], name="CE OI Δ",
+            marker_color=ce_chg_colors, width=diff*0.3))
+        fig_oichg.add_trace(go.Bar(x=df["Strike"]+diff*0.15, y=df["PE OI Chg"], name="PE OI Δ",
+            marker_color=pe_chg_colors, width=diff*0.3))
+        fig_oichg.add_hline(y=0, line=dict(color="#475569", width=1))
+        fig_oichg.update_layout(**PLOTLY_LAYOUT, height=320,
+            title=dict(text="OI Change — Positive = Build-up, Negative = Unwinding", font=dict(size=13)),
+            xaxis_title="Strike", yaxis_title="OI Change")
+        st.plotly_chart(fig_oichg, use_container_width=True)
+
+        ch1, ch2 = st.columns(2)
+
+        with ch1:
+            # Delta Skew
+            st.markdown("#### 📉 Delta Skew")
+            fig_d = go.Figure()
+            fig_d.add_trace(go.Scatter(x=df["Strike"], y=df["CE Delta"], mode="lines+markers",
+                line=dict(color="#3b82f6", width=2), marker=dict(size=4), name="CE Δ"))
+            fig_d.add_trace(go.Scatter(x=df["Strike"], y=df["PE Delta"], mode="lines+markers",
+                line=dict(color="#ef4444", width=2), marker=dict(size=4), name="PE Δ"))
+            fig_d.add_hline(y=0, line=dict(color="#475569", width=1))
+            fig_d.add_vline(x=atm_strike, line=dict(color="#64748b", dash="dash", width=1))
+            fig_d.update_layout(**PLOTLY_LAYOUT, height=320,
+                title=dict(text="Delta Across Strikes", font=dict(size=12)),
+                xaxis_title="Strike", yaxis_title="Delta")
+            st.plotly_chart(fig_d, use_container_width=True)
+
+        with ch2:
+            # IV Smile
+            st.markdown("#### 😊 IV Smile")
+            fig_iv = go.Figure()
+            fig_iv.add_trace(go.Scatter(x=df["Strike"], y=df["CE IV"], mode="lines+markers",
+                line=dict(color="#3b82f6", width=2), marker=dict(size=4, symbol="triangle-up"), name="CE IV"))
+            fig_iv.add_trace(go.Scatter(x=df["Strike"], y=df["PE IV"], mode="lines+markers",
+                line=dict(color="#ef4444", width=2), marker=dict(size=4, symbol="triangle-down"), name="PE IV"))
+            fig_iv.add_vline(x=atm_strike, line=dict(color="#64748b", dash="dash", width=1))
+            fig_iv.update_layout(**PLOTLY_LAYOUT, height=320,
+                title=dict(text="IV Smile / Skew", font=dict(size=12)),
+                xaxis_title="Strike", yaxis_title="IV (%)")
+            st.plotly_chart(fig_iv, use_container_width=True)
+
+        # Cumulative OI Pressure
+        st.markdown("#### ⚖️ Cumulative OI Pressure")
+        ds = df.sort_values("Strike")
+        fig_cum = go.Figure()
+        fig_cum.add_trace(go.Scatter(x=ds["Strike"], y=ds["CE OI"].cumsum(), mode="lines",
+            fill="tozeroy", fillcolor="rgba(239,68,68,0.12)",
+            line=dict(color="#ef4444", width=2), name="Cumul. Call OI"))
+        fig_cum.add_trace(go.Scatter(x=ds["Strike"], y=ds["PE OI"].cumsum(), mode="lines",
+            fill="tozeroy", fillcolor="rgba(34,197,94,0.12)",
+            line=dict(color="#22c55e", width=2), name="Cumul. Put OI"))
+        fig_cum.add_vline(x=atm_strike, line=dict(color="#64748b", dash="dash", width=1))
+        fig_cum.update_layout(**PLOTLY_LAYOUT, height=320,
+            title=dict(text="Cumulative OI Build-up", font=dict(size=13)),
+            xaxis_title="Strike", yaxis_title="Cumulative OI")
+        st.plotly_chart(fig_cum, use_container_width=True)
+
+        # Volume-Weighted Average Strike
+        total_vol = df["CE Vol"].sum() + df["PE Vol"].sum()
+        if total_vol > 0:
+            vwas = ((df["Strike"] * (df["CE Vol"] + df["PE Vol"])).sum()) / total_vol
+            st.markdown(f"""
+            <div style="text-align:center; padding:10px; margin:8px 0;
+                        border:1px solid #1e293b; border-radius:8px; background:rgba(17,24,39,0.5);">
+                <span style="font-size:11px; color:#64748b; text-transform:uppercase; letter-spacing:1.5px;">
+                    Volume-Weighted Avg Strike
                 </span><br>
-                Breakevens: ₹{lower_be:,.0f} – ₹{upper_be:,.0f}<br>
-                <em>⚠️ Unlimited risk. Use trailing stop losses at 2σ boundaries
-                (₹{lower_2sigma:,.0f} / ₹{upper_2sigma:,.0f}).</em>
-            </div>
-            """, unsafe_allow_html=True)
-
-        elif selected_strategy_view == "Iron Butterfly":
-            c_sell_ce, p_sell_pe = get_prices(atm_strike)
-            c_buy_ce, _ = get_prices(ic_buy_call)
-            _, p_buy_pe = get_prices(ic_buy_put)
-
-            net_credit = (c_sell_ce + p_sell_pe) - (c_buy_ce + p_buy_pe)
-            net_credit = max(net_credit, 0.0)
-
-            st.markdown(f"""
-            <div class="playbook-card">
-                <div class="playbook-title">🦋 Iron Butterfly (Volatility Crush)</div>
-                <strong>Legs:</strong><br>
-                • Buy 1x <b>{ic_buy_put} PE</b> @ ₹{p_buy_pe:.2f}<br>
-                • Sell 1x <b>{atm_strike} PE</b> @ ₹{p_sell_pe:.2f}<br>
-                • Sell 1x <b>{atm_strike} CE</b> @ ₹{c_sell_ce:.2f}<br>
-                • Buy 1x <b>{ic_buy_call} CE</b> @ ₹{c_buy_ce:.2f}<br><br>
-                <span style='color: #16a34a; font-size: 16px; font-weight: bold;'>
-                    💰 Net Credit: ₹{net_credit:,.2f} / lot
+                <span style="font-family:'JetBrains Mono',monospace; font-size:24px; font-weight:700; color:#f59e0b;">
+                    {vwas:,.1f}
                 </span>
+                <span style="font-size:12px; color:#64748b;"> &nbsp;(where the money flows)</span>
             </div>
             """, unsafe_allow_html=True)
 
-        # ══════════════════════════════════════════════
-        #  OPTIONS CHAIN TABLE
-        # ══════════════════════════════════════════════
+    # ═══════════════════════════════════════════════
+    #  FOOTER
+    # ═══════════════════════════════════════════════
 
-        st.subheader("📊 Live Options Chain — Greeks & Market Data")
+    st.markdown("---")
+    f1, f2, f3 = st.columns(3)
+    f1.caption(f"🕐 {datetime.now().strftime('%H:%M:%S IST')}")
+    f2.caption(f"📅 Expiry: {selected_expiry} · DTE: {tte_days:.1f}d")
+    f3.caption(f"📊 {len(df)} strikes loaded · Lot: {lot_size}")
 
-        def color_strikes(row):
-            """Highlight ITM calls green, ITM puts red, ATM bold."""
-            val = row["Strike"]
-            base = [""] * len(row)
-            if val == atm_strike:
-                base = ["background-color: #fef9c3; font-weight: bold;"] * len(row)
-            elif val < spot_price:
-                base = ["background-color: #f0fdf4;"] * len(row)
-            elif val > spot_price:
-                base = ["background-color: #fef2f2;"] * len(row)
-            return base
+    # Auto-refresh
+    if auto_refresh:
+        time.sleep(refresh_interval)
+        st.rerun()
 
-        styled_df = df_chain.style.apply(color_strikes, axis=1).format({
-            "CE OI": "{:,.0f}", "CE Vol": "{:,.0f}", "CE IV": "{:.1f}%",
-            "CE Delta": "{:.3f}", "CE Gamma": "{:.5f}", "CE Theta": "{:.2f}", "CE Vega": "{:.2f}",
-            "CE LTP": "₹{:.2f}",
-            "Strike": "{:,.0f}",
-            "PE LTP": "₹{:.2f}",
-            "PE Vega": "{:.2f}", "PE Theta": "{:.2f}", "PE Gamma": "{:.5f}", "PE Delta": "{:.3f}",
-            "PE IV": "{:.1f}%", "PE Vol": "{:,.0f}", "PE OI": "{:,.0f}",
-        })
-        st.dataframe(styled_df, use_container_width=True, height=420)
-
-        # ══════════════════════════════════════════════
-        #  CHART 1: OPEN INTEREST DISTRIBUTION
-        # ══════════════════════════════════════════════
-
-        st.subheader("📈 Open Interest Distribution Profile")
-
-        fig_oi, ax_oi = plt.subplots(figsize=(12, 4.5))
-        width = diff * 0.35
-        strikes = df_chain["Strike"].values
-
-        ax_oi.bar(strikes - width / 2, df_chain["CE OI"], width,
-                  label="Call OI", color="#ef4444", alpha=0.85, edgecolor="#b91c1c", linewidth=0.5)
-        ax_oi.bar(strikes + width / 2, df_chain["PE OI"], width,
-                  label="Put OI", color="#22c55e", alpha=0.85, edgecolor="#15803d", linewidth=0.5)
-
-        ax_oi.axvline(atm_strike, color="#0f172a", linestyle="--", linewidth=1.2, label=f"ATM ({atm_strike:,.0f})")
-        ax_oi.axvline(max_pain_strike, color="#7c3aed", linestyle="-.", linewidth=1.2,
-                      label=f"Max Pain ({max_pain_strike:,.0f})")
-
-        ax_oi.set_title(f"OI Distribution — {selected_index_name} ({selected_expiry})", fontsize=11, fontweight="bold")
-        ax_oi.set_xlabel("Strike Price", fontsize=9)
-        ax_oi.set_ylabel("Open Interest (Contracts)", fontsize=9)
-        ax_oi.legend(loc="upper right", fontsize=8)
-        ax_oi.grid(True, axis="y", linestyle=":", alpha=0.4)
-        ax_oi.set_xticks(strikes)
-        ax_oi.set_xticklabels([f"{int(s)}" for s in strikes], rotation=45, fontsize=7)
-        st.pyplot(fig_oi)
-        plt.close(fig_oi)
-
-        # ══════════════════════════════════════════════
-        #  CHART 2: DELTA SKEW CURVE
-        # ══════════════════════════════════════════════
-
-        st.subheader("📉 Delta Skew Profile (CE vs PE)")
-
-        fig_delta, ax_delta = plt.subplots(figsize=(12, 3.5))
-        ax_delta.plot(df_chain["Strike"], df_chain["CE Delta"], marker="o", markersize=4,
-                      color="#0284c7", linewidth=1.8, label="CE Delta")
-        ax_delta.plot(df_chain["Strike"], df_chain["PE Delta"], marker="s", markersize=4,
-                      color="#e11d48", linewidth=1.8, label="PE Delta")
-        ax_delta.axhline(0, color="#94a3b8", linestyle="-", linewidth=0.8)
-        ax_delta.axvline(atm_strike, color="#0f172a", linestyle="--", linewidth=1, alpha=0.6,
-                         label=f"ATM ({atm_strike:,.0f})")
-
-        ax_delta.set_title("Delta Skew Across Strikes", fontsize=11, fontweight="bold")
-        ax_delta.set_xlabel("Strike Price", fontsize=9)
-        ax_delta.set_ylabel("Delta", fontsize=9)
-        ax_delta.legend(loc="center right", fontsize=8)
-        ax_delta.grid(True, linestyle=":", alpha=0.4)
-        st.pyplot(fig_delta)
-        plt.close(fig_delta)
-
-        # ══════════════════════════════════════════════
-        #  CHART 3: IV SMILE (if market IV available)
-        # ══════════════════════════════════════════════
-
-        st.subheader("😊 Implied Volatility Smile")
-
-        fig_iv, ax_iv = plt.subplots(figsize=(12, 3.5))
-        ax_iv.plot(df_chain["Strike"], df_chain["CE IV"], marker="^", markersize=4,
-                   color="#0284c7", linewidth=1.8, label="CE IV")
-        ax_iv.plot(df_chain["Strike"], df_chain["PE IV"], marker="v", markersize=4,
-                   color="#e11d48", linewidth=1.8, label="PE IV")
-        ax_iv.axvline(atm_strike, color="#0f172a", linestyle="--", linewidth=1, alpha=0.6)
-
-        ax_iv.set_title("IV Smile / Skew Across Strikes", fontsize=11, fontweight="bold")
-        ax_iv.set_xlabel("Strike Price", fontsize=9)
-        ax_iv.set_ylabel("Implied Volatility (%)", fontsize=9)
-        ax_iv.legend(loc="upper right", fontsize=8)
-        ax_iv.grid(True, linestyle=":", alpha=0.4)
-        st.pyplot(fig_iv)
-        plt.close(fig_iv)
-
-        # ══════════════════════════════════════════════
-        #  CHART 4: OI-WEIGHTED PUT/CALL PRESSURE
-        # ══════════════════════════════════════════════
-
-        st.subheader("⚖️ Cumulative OI Pressure (Call vs Put)")
-
-        fig_cum, ax_cum = plt.subplots(figsize=(12, 3.5))
-        df_sorted = df_chain.sort_values("Strike")
-        ax_cum.fill_between(df_sorted["Strike"], df_sorted["CE OI"].cumsum(), alpha=0.3, color="#ef4444", label="Cumul. Call OI")
-        ax_cum.fill_between(df_sorted["Strike"], df_sorted["PE OI"].cumsum(), alpha=0.3, color="#22c55e", label="Cumul. Put OI")
-        ax_cum.plot(df_sorted["Strike"], df_sorted["CE OI"].cumsum(), color="#ef4444", linewidth=1.5)
-        ax_cum.plot(df_sorted["Strike"], df_sorted["PE OI"].cumsum(), color="#22c55e", linewidth=1.5)
-        ax_cum.axvline(atm_strike, color="#0f172a", linestyle="--", linewidth=1, alpha=0.6)
-
-        ax_cum.set_title("Cumulative OI Build-up", fontsize=11, fontweight="bold")
-        ax_cum.set_xlabel("Strike Price", fontsize=9)
-        ax_cum.set_ylabel("Cumulative OI", fontsize=9)
-        ax_cum.legend(fontsize=8)
-        ax_cum.grid(True, linestyle=":", alpha=0.4)
-        st.pyplot(fig_cum)
-        plt.close(fig_cum)
-
-        # ══════════════════════════════════════════════
-        #  FOOTER: LAST REFRESH + DATA FRESHNESS
-        # ══════════════════════════════════════════════
-
-        now_ist = datetime.now() + timedelta(hours=0)  # Server is already IST
-        st.markdown("---")
-        fc1, fc2, fc3 = st.columns(3)
-        fc1.caption(f"🕐 Last Refresh: {now_ist.strftime('%H:%M:%S IST')}")
-        fc2.caption(f"📅 Expiry: {selected_expiry} | T = {max(time_to_expiry_years * 365, 0):.2f} days")
-        fc3.caption(f"📊 Chain Strikes Loaded: {len(df_chain)}")
-
-        # ══════════════════════════════════════════════
-        #  AUTO-REFRESH TRIGGER
-        # ══════════════════════════════════════════════
-
-        if auto_refresh:
-            time.sleep(refresh_interval)
-            st.rerun()
-
-    except ValueError as ve:
-        st.error(f"🚫 **Data Error**: {ve}")
-    except requests.exceptions.HTTPError as he:
-        status = he.response.status_code if he.response is not None else "N/A"
-        st.error(
-            f"🚫 **HTTP {status}**: The Upstox API rejected the request. "
-            f"If status is 401/403, your access token has likely expired (they reset at midnight IST). "
-            f"Re-authenticate via the Upstox OAuth flow to get a fresh token."
-        )
-    except requests.exceptions.ConnectionError:
-        st.error("🚫 **Connection Error**: Could not reach the Upstox API. Check your network or try again.")
-    except requests.exceptions.Timeout:
-        st.error("🚫 **Timeout**: The Upstox API took too long to respond. Try again in a few seconds.")
-    except Exception as e:
-        st.error(f"🚫 **Unexpected Error**: {type(e).__name__}: {e}")
-        st.exception(e)
+except ValueError as ve:
+    st.error(f"🚫 **Data Error**: {ve}")
+except requests.exceptions.HTTPError as he:
+    code = he.response.status_code if he.response is not None else "?"
+    st.error(f"🚫 **HTTP {code}**: Token likely expired. Re-authenticate via Upstox OAuth.")
+except requests.exceptions.ConnectionError:
+    st.error("🚫 **Connection Error**: Can't reach Upstox API.")
+except requests.exceptions.Timeout:
+    st.error("🚫 **Timeout**: API didn't respond in time.")
+except Exception as e:
+    st.error(f"🚫 {type(e).__name__}: {e}")
+    st.exception(e)
