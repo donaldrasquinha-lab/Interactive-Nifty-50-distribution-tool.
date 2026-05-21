@@ -936,7 +936,12 @@ try:
             ))
 
             fig_hm.update_layout(
-                **PLOTLY_LAYOUT,
+                template="plotly_dark",
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(17,24,39,0.6)",
+                font=dict(family="Inter, sans-serif", size=11, color="#94a3b8"),
+                margin=dict(l=50, r=30, t=40, b=40),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, font=dict(size=10)),
                 height=380,
                 title=dict(text=f"{strat_choice} — {lot_size} lot size", font=dict(size=14)),
                 xaxis=dict(
@@ -944,11 +949,13 @@ try:
                     tickangle=-45,
                     gridcolor="rgba(30,41,59,0.4)",
                     side="bottom",
+                    zeroline=False,
                 ),
                 yaxis=dict(
                     title="",
                     gridcolor="rgba(30,41,59,0.4)",
-                    autorange="reversed",  # Expiry day at bottom
+                    autorange="reversed",
+                    zeroline=False,
                 ),
             )
             # Mark current spot
@@ -1040,12 +1047,16 @@ try:
                 )
 
             fig_payoff.update_layout(
-                **PLOTLY_LAYOUT, height=340,
+                template="plotly_dark",
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(17,24,39,0.6)",
+                font=dict(family="Inter, sans-serif", size=11, color="#94a3b8"),
+                margin=dict(l=50, r=30, t=40, b=40),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, font=dict(size=10)),
+                height=340,
                 title=dict(text="What Happens on Expiry Day", font=dict(size=14)),
-                xaxis_title="Where the Index Closes ➜",
-                yaxis_title="Your Profit / Loss (₹)",
-                yaxis=dict(tickprefix="₹", tickformat=",", gridcolor="rgba(30,41,59,0.6)", zeroline=False),
-                xaxis=dict(tickformat=",", gridcolor="rgba(30,41,59,0.6)", zeroline=False),
+                xaxis=dict(title="Where the Index Closes ➜", tickformat=",", gridcolor="rgba(30,41,59,0.6)", zeroline=False),
+                yaxis=dict(title="Your Profit / Loss (₹)", tickprefix="₹", tickformat=",", gridcolor="rgba(30,41,59,0.6)", zeroline=False),
             )
             st.plotly_chart(fig_payoff, use_container_width=True)
 
