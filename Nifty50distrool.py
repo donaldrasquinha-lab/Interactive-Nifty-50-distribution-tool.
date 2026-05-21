@@ -72,10 +72,11 @@ upstox_token = st.sidebar.text_input(
 
 selected_index = st.sidebar.selectbox("Target Asset Index:", ["Nifty 50", "Nifty Bank", "Financial Services"])
 
+# FIXED: Replaced invalid indices names with standard production instrument keys
 index_map = {
-    "Nifty 50": {"key": "NSE_INDEX|Nifty 50", "lot_size": 50, "default_spot": 23800, "oi_step": 100},
-    "Nifty Bank": {"key": "NSE_INDEX|Nifty Bank", "lot_size": 15, "default_spot": 51200, "oi_step": 100},
-    "Financial Services": {"key": "NSE_INDEX|Nifty Fin Service", "lot_size": 40, "default_spot": 22400, "oi_step": 100}
+    "Nifty 50": {"key": "NSE_INDEX|Nifty_50", "lot_size": 50, "default_spot": 23800, "oi_step": 100},
+    "Nifty Bank": {"key": "NSE_INDEX|Nifty_Bank", "lot_size": 15, "default_spot": 51200, "oi_step": 100},
+    "Financial Services": {"key": "NSE_INDEX|FINNIFTY", "lot_size": 40, "default_spot": 22400, "oi_step": 50}
 }
 
 lot_size = index_map[selected_index]["lot_size"]
@@ -130,93 +131,102 @@ if upstox_token:
         
         # A. Pull current index valuation parameters via Live LTP REST Layer
         quote_url = 'https://upstox.com'
-        quote_res = requests.get(quote_url, headers=headers, params={'instrument_key': instrument_key}, timeout=10).json()
+        quote_response = requests.get(quote_url, headers=headers, params={'instrument_key': instrument_key}, timeout=10)
         
-        if quote_res.get('status') == 'success' and instrument_key in quote_res.get('data', {}):
-            spot_price = quote_res['data'][instrument_key]['last_price']
-            atm_strike = int(round(spot_price / oi_step) * oi_step)
+        if quote_response.status_code == 200:
+            quote_res = quote_response.json()
             
-            # B. Pull Options Chain records using structural parameters mapping
-            chain_url = 'https://upstox.com'
-            chain_res = requests.get(chain_url, headers=headers, params={'instrument_key': instrument_key, 'expiry_date': computed_expiry_str}, timeout=10).json()
-            
-            if chain_res.get('status') == 'success':
-                raw_data = chain_res.get('data', [])
+            if quote_res.get('status') == 'success' and instrument_key in quote_res.get('data', {}):
+                spot_price = quote_res['data'][instrument_key]['last_price']
+                atm_strike = int(round(spot_price / oi_step) * oi_step)
                 
-                if len(raw_data) > 0:
-                    max_call_oi, max_put_oi = -1, -1
-                    total_call_oi, total_put_oi = 0, 0
-                    total_call_coi, total_put_coi = 0, 0
-                    total_call_iv, total_put_iv = 0.0, 0.0
+                # B. Pull Options Chain records using structural parameters mapping
+                chain_url = 'https://upstox.com'
+                chain_response = requests.get(chain_url, headers=headers, params={'instrument_key': instrument_key, 'expiry_date': computed_expiry_str}, timeout=10)
+                
+                if chain_response.status_code == 200:
+                    chain_res = chain_response.json()
+                    raw_data = chain_res.get('data', [])
                     
-                    best_call_strike, best_put_strike = atm_strike + oi_step, atm_strike - oi_step
-                    premium_lookup = {}
-                    processed_records = []
-                    timestamp_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    
-                    first_row = raw_data[0] if isinstance(raw_data, list) else raw_data
-                    sample_leg = first_row.get('call_options') or first_row.get('put_options')
-                    if sample_leg:
-                        detected_expiry = sample_leg.get('metadata', {}).get('expiry_date', computed_expiry_str)
+                    if chain_res.get('status') == 'success' and len(raw_data) > 0:
+                        max_call_oi, max_put_oi = -1, -1
+                        total_call_oi, total_put_oi = 0, 0
+                        total_call_coi, total_put_coi = 0, 0
+                        total_call_iv, total_put_iv = 0.0, 0.0
+                        
+                        best_call_strike, best_put_strike = atm_strike + oi_step, atm_strike - oi_step
+                        premium_lookup = {}
+                        processed_records = []
+                        timestamp_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        
+                        # FIXED: Extracted dictionary level explicitly from index zero list array to remove parsing block
+                        first_row = raw_data[0]
+                        sample_leg = first_row.get('call_options') or first_row.get('put_options')
+                        if sample_leg:
+                            detected_expiry = sample_leg.get('metadata', {}).get('expiry_date', computed_expiry_str)
 
-                    for item in raw_data:
-                        strike = int(item['strike_price'])
-                        ce_data = item.get('call_options', {}).get('market_data', {}) if item.get('call_options') else {}
-                        pe_data = item.get('put_options', {}).get('market_data', {}) if item.get('put_options') else {}
-                        
-                        c_oi, p_oi = ce_data.get('oi', 0), pe_data.get('oi', 0)
-                        c_coi, p_coi = ce_data.get('oi_change', 0), pe_data.get('oi_change', 0)
-                        c_iv, p_iv = ce_data.get('implied_volatility', 12.0), pe_data.get('implied_volatility', 12.0)
-                        
-                        total_call_oi += c_oi
-                        total_put_oi += p_oi
-                        total_call_coi += abs(c_coi)
-                        total_put_coi += abs(p_coi)
-                        
-                        if abs(strike - atm_strike) <= (oi_step * 3):
-                            total_call_iv += c_iv
-                            total_put_iv += p_iv
-                        
-                        premium_lookup[strike] = ce_data.get('ltp', atm_premium)
-                        
-                        if strike > spot_price and c_oi > max_call_oi:
-                            max_call_oi = c_oi
-                            best_call_strike = strike
-                        if strike < spot_price and p_oi > max_put_oi:
-                            max_put_oi = p_oi
-                            best_put_strike = strike
+                        for item in raw_data:
+                            strike = int(item['strike_price'])
+                            ce_data = item.get('call_options', {}).get('market_data', {}) if item.get('call_options') else {}
+                            pe_data = item.get('put_options', {}).get('market_data', {}) if item.get('put_options') else {}
                             
-                        processed_records.append({
-                            "Timestamp": timestamp_str, "Underlying": selected_index, "Spot_Price": spot_price,
-                            "Expiry_Date": detected_expiry, "Strike_Price": strike, "CE_LTP": ce_data.get('ltp', 0.0),
-                            "CE_OI": c_oi, "PE_LTP": pe_data.get('ltp', 0.0), "PE_OI": p_oi
-                        })
-                    
-                    oi_wall_strike = best_call_strike
-                    oi_resistance, oi_support = best_call_strike, best_put_strike
-                    live_pcr = round(total_put_oi / total_call_oi, 2) if total_call_oi > 0 else 1.0
-                    
-                    money_velocity_ratio = round(total_put_coi / total_call_coi, 2) if total_call_coi > 0 else 1.0
-                    volatility_skew_index = round(total_put_iv / total_call_iv, 2) if total_call_iv > 0 else 1.0
-                    is_live = True
-                    
-                    atm_premium = premium_lookup.get(atm_strike, atm_premium)
-                    oi_wall_premium = premium_lookup.get(oi_wall_strike, oi_wall_premium)
-                    
-                    strike_sell = oi_wall_strike
-                    strike_hedge = strike_sell + (strike_sell - atm_strike)
-                    hedge_premium = premium_lookup.get(strike_hedge, hedge_premium)
-                    
-                    filename_prefix = selected_index.replace(" ", "_").lower()
-                    pd.DataFrame(processed_records).to_csv(f"{filename_prefix}_chain_latest.csv", index=False)
-                    with open(f"{filename_prefix}_snapshot.json", "w") as j_file:
-                        json.dump({"index": selected_index, "live_spot": spot_price, "chain_matrix": processed_records}, j_file, indent=4)
+                            c_oi, p_oi = ce_data.get('oi', 0), pe_data.get('oi', 0)
+                            c_coi, p_coi = ce_data.get('oi_change', 0), pe_data.get('oi_change', 0)
+                            c_iv, p_iv = ce_data.get('implied_volatility', 12.0), pe_data.get('implied_volatility', 12.0)
+                            
+                            total_call_oi += c_oi
+                            total_put_oi += p_oi
+                            total_call_coi += abs(c_coi)
+                            total_put_coi += abs(p_coi)
+                            
+                            if abs(strike - atm_strike) <= (oi_step * 3):
+                                total_call_iv += c_iv
+                                total_put_iv += p_iv
+                            
+                            premium_lookup[strike] = ce_data.get('ltp', atm_premium)
+                            
+                            if strike > spot_price and c_oi > max_call_oi:
+                                max_call_oi = c_oi
+                                best_call_strike = strike
+                            if strike < spot_price and p_oi > max_put_oi:
+                                max_put_oi = p_oi
+                                best_put_strike = strike
+                                
+                            processed_records.append({
+                                "Timestamp": timestamp_str, "Underlying": selected_index, "Spot_Price": spot_price,
+                                "Expiry_Date": detected_expiry, "Strike_Price": strike, "CE_LTP": ce_data.get('ltp', 0.0),
+                                "CE_OI": c_oi, "PE_LTP": pe_data.get('ltp', 0.0), "PE_OI": p_oi
+                            })
+                        
+                        oi_wall_strike = best_call_strike
+                        oi_resistance, oi_support = best_call_strike, best_put_strike
+                        live_pcr = round(total_put_oi / total_call_oi, 2) if total_call_oi > 0 else 1.0
+                        
+                        money_velocity_ratio = round(total_put_coi / total_call_coi, 2) if total_call_coi > 0 else 1.0
+                        volatility_skew_index = round(total_put_iv / total_call_iv, 2) if total_call_iv > 0 else 1.0
+                        is_live = True
+                        
+                        atm_premium = premium_lookup.get(atm_strike, atm_premium)
+                        oi_wall_premium = premium_lookup.get(oi_wall_strike, oi_wall_premium)
+                        
+                        strike_sell = oi_wall_strike
+                        strike_hedge = strike_sell + (strike_sell - atm_strike)
+                        hedge_premium = premium_lookup.get(strike_hedge, hedge_premium)
+                        
+                        filename_prefix = selected_index.replace(" ", "_").lower()
+                        pd.DataFrame(processed_records).to_csv(f"{filename_prefix}_chain_latest.csv", index=False)
+                        with open(f"{filename_prefix}_snapshot.json", "w") as j_file:
+                            json.dump({"index": selected_index, "live_spot": spot_price, "chain_matrix": processed_records}, j_file, indent=4)
+                        st.sidebar.success("💾 Alpha Snapshot Saved!")
+                else:
+                    st.sidebar.warning(f"Option Chain API code {chain_response.status_code}. Using emulation curves.")
             else:
-                st.sidebar.warning("Option Chain connection refused. Running simulation overlay.")
+                # Print message inside sidebar to identify if your daily token string contains typos
+                st.sidebar.error(f"Quote Refused. Response payload status says: {quote_response.json().get('errors',[{}])[0].get('message')}")
         else:
-            st.sidebar.error("Token verification rejected by gateway. Loading mathematical emulations.")
-    except Exception:
-        pass
+            st.sidebar.error(f"LTP Connection Denied ({quote_response.status_code}). check Token string.")
+    except Exception as e:
+        st.sidebar.error(f"Parsing Fault. Reverting to emulation mode.")
 
 if not is_live:
     atm_strike = int(round(spot_price / oi_step) * oi_step)
@@ -254,7 +264,7 @@ else:
 # ── 4. Metric Panels Plotted Directly Under Title Bar ──
 col_m1, col_m2, col_m3, col_m4, col_m5 = st.columns(5)
 with col_m1:
-    st.metric(label=f"🎯 {selected_index} Spot", value=f"₹{spot_price:,.2f}", delta="Live values Active" if is_live else "Simulated Values")
+    st.metric(label=f"🎯 {selected_index} Spot", value=f"₹{spot_price:,.2f}", delta="Live Feed Active" if is_live else "Simulated Engine")
 with col_m2:
     st.metric(label="📊 Put-Call Ratio (PCR)", value=f"{live_pcr}", delta=f"Velocity Ratio: {money_velocity_ratio}")
 with col_m3:
