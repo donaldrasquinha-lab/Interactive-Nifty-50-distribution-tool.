@@ -5,11 +5,11 @@ from scipy.stats import norm
 import requests
 import json
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # 1. Page Configuration & Theme Setup
 st.set_page_config(page_title="Upstox Multi-Index Data Logger", layout="wide")
-st.title("⚡ Upstox Live Analytical Data Logger & Dashboard")
+st.title("⚡ Upstox Live Multi-Index OI & Statistical Dashboard")
 st.markdown("---")
 
 # 2. Sidebar Control Panel & Token Configuration
@@ -37,17 +37,25 @@ lot_size = index_map[selected_index]["lot_size"]
 instrument_key = index_map[selected_index]["key"]
 oi_step = index_map[selected_index]["oi_step"]
 
+# DYNAMIC EXPIRY CALCULATION: Finds the next upcoming Thursday naturally
+today = datetime.now()
+days_until_thursday = (3 - today.weekday()) % 7
+if days_until_thursday == 0 and today.hour >= 16: # If today is Thursday after market hours, roll to next week
+    days_until_thursday = 7
+next_thursday = today + timedelta(days=days_until_thursday)
+computed_expiry_str = next_thursday.strftime("%Y-%m-%d")
+
 # Volatility Controls for Statistical Calculations
 st.sidebar.header("🔧 Statistical Parameters")
 iv_percent = st.sidebar.slider("Implied Volatility (IV %)", min_value=5.0, max_value=40.0, value=12.0, step=0.5) / 100
-days_to_expiry = st.sidebar.number_input("Days to Expiry (For SD Calculation)", min_value=1, max_value=30, value=7)
+days_to_expiry = st.sidebar.number_input("Days to Expiry (For SD Calculation)", min_value=1, max_value=30, value=max(1, days_until_thursday))
 
 st.sidebar.header("🛠️ Risk Controls")
 show_adjustment = st.sidebar.checkbox("Overlay Recommended Adjustment Leg", value=True)
 
 # 3. State Management & Live Data Handlers
 spot_price = index_map[selected_index]["default_spot"]
-detected_expiry = "Simulation_Expiry"
+detected_expiry = computed_expiry_str
 is_live = False
 
 # Setup baseline mathematical defaults for option premiums
@@ -73,7 +81,6 @@ if upstox_token:
         quote_params = {'instrument_key': instrument_key}
         quote_response = requests.get(quote_url, headers=headers, params=quote_params)
         
-        # SAFE GUARD: Verify HTTP 200 AND JSON Content Type to block raw HTML text
         if quote_response.status_code == 200 and 'application/json' in quote_response.headers.get('Content-Type', ''):
             quote_res = quote_response.json()
             if quote_res.get('status') == 'success' and instrument_key in quote_res.get('data', {}):
@@ -83,7 +90,7 @@ if upstox_token:
                 
                 # B. Fetch Option Chain ONLY if Spot Price step succeeded cleanly
                 chain_url = 'https://upstox.com'
-                chain_params = {'instrument_key': instrument_key} 
+                chain_params = {'instrument_key': instrument_key, 'expiry_date': computed_expiry_str} 
                 chain_response = requests.get(chain_url, headers=headers, params=chain_params)
                 
                 if chain_response.status_code == 200 and 'application/json' in chain_response.headers.get('Content-Type', ''):
@@ -101,7 +108,7 @@ if upstox_token:
                         first_row = raw_data[0]
                         sample_leg = first_row.get('call_options') or first_row.get('put_options')
                         if sample_leg:
-                            detected_expiry = sample_leg.get('metadata', {}).get('expiry_date', 'Unknown')
+                            detected_expiry = sample_leg.get('metadata', {}).get('expiry_date', computed_expiry_str)
 
                         # Loop through option chain array matrices
                         for item in raw_data:
@@ -152,6 +159,9 @@ if upstox_token:
                         st.sidebar.success("💾 Snapshots Documented!")
                 else:
                     st.sidebar.warning(f"Option Chain Server rejected parameters ({chain_response.status_code}). Using emulations.")
+            else:
+                st.sidebar.error("Upstox rejected token data framework. Running secure mathematical simulation.")
+                is_live = False
         else:
             st.sidebar.error(f"Upstox Authorization Refused ({quote_response.status_code}). Token is likely expired.")
             
