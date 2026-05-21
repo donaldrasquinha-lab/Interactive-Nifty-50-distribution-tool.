@@ -58,44 +58,52 @@ if upstox_token:
             'Authorization': f'Bearer {upstox_token}'
         }
         
-        # A. Corrected Spot Price Query using Market Quote v2 API
-        quote_url = 'https://upstox.com'
+        # A. Fetch Spot Price using the dedicated LTP Quotes Endpoint
+        quote_url = 'https://api.upstox.com/v2/market-quote/ltp'
         quote_params = {'instrument_key': instrument_key}
-        quote_res = requests.get(quote_url, headers=headers, params=quote_params).json()
+        quote_response = requests.get(quote_url, headers=headers, params=quote_params)
         
-        if quote_res.get('status') == 'success' and instrument_key in quote_res.get('data', {}):
-            spot_price = quote_res['data'][instrument_key]['last_price']
-            atm_strike = int(round(spot_price / oi_step) * oi_step)
-            is_live = True
-            
-        # B. Corrected Option Chain API Call
+        if quote_response.status_code == 200:
+            quote_res = quote_response.json()
+            if quote_res.get('status') == 'success' and instrument_key in quote_res.get('data', {}):
+                spot_price = quote_res['data'][instrument_key]['last_price']
+                atm_strike = int(round(spot_price / oi_step) * oi_step)
+                is_live = True
+        else:
+            st.sidebar.error(f"Quote API Status Error: {quote_response.status_code}. (Likely Invalid or Expired Token)")
+
+        # B. Fetch Option Chain API Call with HTTP Status Guard Patch
         chain_url = 'https://api.upstox.com/v2/option/chain'
-        chain_params = {'instrument_key': instrument_key, 'expiry_date': '2026-05-28'}
-        chain_res = requests.get(chain_url, headers=headers, params=chain_params).json()
+        chain_params = {'instrument_key': instrument_key} # Fetches nearest available operational expiry naturally
+        chain_response = requests.get(chain_url, headers=headers, params=chain_params)
         
-        if chain_res.get('status') == 'success' and len(chain_res.get('data', [])) > 0:
-            max_oi = -1
-            best_oi_strike = atm_strike + oi_step
-            premium_lookup = {}
-            
-            for item in chain_res['data']:
-                strike = int(item['strike_price'])
-                if 'call_options' in item and item['call_options']:
-                    m_data = item['call_options']['market_data']
-                    current_oi = m_data.get('oi', 0)
-                    premium_lookup[strike] = m_data.get('ltp', 50)
-                    
-                    if strike > spot_price and current_oi > max_oi:
-                        max_oi = current_oi
-                        best_oi_strike = strike
-            
-            oi_wall_strike = best_oi_strike
-            atm_premium = premium_lookup.get(atm_strike, 150)
-            oi_wall_premium = premium_lookup.get(oi_wall_strike, 60)
-            
-            # Define hedge target boundary strike level
-            hedge_strike_target = oi_wall_strike + (oi_wall_strike - atm_strike)
-            hedge_premium = premium_lookup.get(hedge_strike_target, 20)
+        if chain_response.status_code == 200:
+            chain_res = chain_response.json()
+            if chain_res.get('status') == 'success' and len(chain_res.get('data', [])) > 0:
+                max_oi = -1
+                best_oi_strike = atm_strike + oi_step
+                premium_lookup = {}
+                
+                for item in chain_res['data']:
+                    strike = int(item['strike_price'])
+                    if 'call_options' in item and item['call_options']:
+                        m_data = item['call_options']['market_data']
+                        current_oi = m_data.get('oi', 0)
+                        premium_lookup[strike] = m_data.get('ltp', 50)
+                        
+                        if strike > spot_price and current_oi > max_oi:
+                            max_oi = current_oi
+                            best_oi_strike = strike
+                
+                oi_wall_strike = best_oi_strike
+                atm_premium = premium_lookup.get(atm_strike, 150)
+                oi_wall_premium = premium_lookup.get(oi_wall_strike, 60)
+                
+                # Define hedge target boundary strike level
+                hedge_strike_target = oi_wall_strike + (oi_wall_strike - atm_strike)
+                hedge_premium = premium_lookup.get(hedge_strike_target, 20)
+        else:
+            st.sidebar.warning(f"Option Chain API Offline ({chain_response.status_code}). Using computed option chain approximations.")
             
     except Exception as e:
         st.sidebar.error(f"API Feed Sync Offline. Reverting to Simulation. Error: {str(e)}")
@@ -104,7 +112,7 @@ if upstox_token:
 if is_live:
     st.success(f"🟢 Connected Live to Upstox API • Syncing Data for {selected_index}")
 else:
-    st.warning(f"🟡 Running in Simulation Mode (No Token Found) • Displaying Baseline Parameters for {selected_index}")
+    st.warning(f"🟡 Running in Simulation Mode (No Active Token Detected) • Displaying Baseline Parameters for {selected_index}")
 
 # 4. Mathematical Engine Setup (68-95-99.7 Rule)
 one_sd_move = spot_price * iv_percent * np.sqrt(days_to_expiry / 365)
@@ -116,7 +124,7 @@ strike_buy = atm_strike
 strike_sell = oi_wall_strike
 strike_hedge = strike_sell + (strike_sell - strike_buy)
 
-# Order Quantities Defined Cleanly Outside Formulas
+# Order Quantities 
 qty_buy = 1
 qty_sell = 2
 qty_hedge = 1
@@ -180,7 +188,6 @@ with col_right:
         ax_t.text(max_prof_x - 140, max_prof_y - 950, f"Max Profit: ₹{int(max_prof_y)}", fontsize=9, weight='bold', color='#0f766e')
 
     ax_t.axhline(0, color='#475569', linestyle='-', linewidth=1.2)
-    # FIX APPLIED HERE: Added the required matching y-axis zero array to fix scatter parsing error
     ax_t.scatter([lower_be, upper_be], [0, 0], color='#b45309', s=60, zorder=5)
     ax_t.set_xlim(x.min(), x.max())
     ax_t.grid(True, linestyle=":", alpha=0.5)
