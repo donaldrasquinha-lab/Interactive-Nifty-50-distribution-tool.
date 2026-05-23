@@ -523,6 +523,207 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
+# ── Help Guide ──
+HELP_CONTENT = """
+## 📖 Upstox Alpha Engine — User Guide
+
+---
+
+### 🔐 Getting Started
+
+**Step 1: Get Your Access Token**
+1. Log in to [Upstox Developer Console](https://api.upstox.com)
+2. Complete the OAuth2 authentication flow
+3. Copy the `access_token` from the redirect URL
+4. Paste it in the sidebar under **Access Token**
+
+> ⚠️ Tokens expire at **midnight IST daily**. You'll need a fresh one each trading day.
+
+**Step 2: Select Your Index**
+Choose from NIFTY 50, BANK NIFTY, FINNIFTY, or MIDCAP NIFTY in the sidebar.
+
+**Step 3: Pick an Expiry**
+The nearest expiry is auto-selected. Switch to weekly/monthly as needed.
+
+---
+
+### 📊 Top KPI Row — What Each Metric Means
+
+| Metric | What It Tells You |
+|--------|-------------------|
+| **Spot** | Current index price from Upstox. This is where the market is right now. |
+| **ATM** | At-The-Money strike — the option strike closest to spot. This is your anchor point. |
+| **PCR** | Put-Call Ratio (by OI). **> 1.0** = more puts written = bullish bias. **< 1.0** = more calls written = bearish bias. |
+| **Max Pain** | The strike where option sellers lose the least money. Markets tend to gravitate here by expiry. |
+| **VWAS** | Volume-Weighted Average Strike — where actual trading volume concentrates. If VWAS > Spot, money is flowing to higher strikes (bullish). |
+| **ADX (14)** | Trend strength (not direction). **< 20** = no trend, range-bound. **20-25** = trend emerging. **> 25** = strong trend. |
+| **DTE** | Days to expiry. Theta decay accelerates sharply below 5 DTE. |
+
+---
+
+### 🎯 IV Percentile Gauge
+
+The horizontal bar shows where current implied volatility sits relative to its recent history.
+
+- **Green zone (0-30%)**: IV is LOW → options are cheap → favor buying strategies (long straddle, debit spreads)
+- **Amber zone (30-70%)**: IV is normal → no strong edge either way
+- **Red zone (70-100%)**: IV is HIGH → options are expensive → favor selling strategies (iron condor, short straddle)
+
+**LIVE** badge = IV computed from actual market prices via Newton-Raphson solver.
+**MANUAL** badge = using the sidebar slider (market closed or no data).
+
+---
+
+### 🟢🔴 Sentiment Card
+
+Combines PCR analysis with OI distribution:
+
+| Signal | PCR Range | Meaning |
+|--------|-----------|---------|
+| **STRONG BULLISH** | ≥ 1.25 | Heavy put writing = writers believe market won't fall. Strong support below. |
+| **MILDLY BULLISH** | 1.05 – 1.25 | Slight bullish tilt. |
+| **NEUTRAL** | 0.95 – 1.05 | No clear directional bias. |
+| **MILDLY BEARISH** | 0.75 – 0.95 | Slight bearish tilt. |
+| **STRONG BEARISH** | ≤ 0.75 | Heavy call writing = writers believe market won't rise. Resistance above. |
+
+**Support** = strike with highest Put OI (floor the market respects).
+**Resistance** = strike with highest Call OI (ceiling the market faces).
+
+---
+
+### 📊 Dashboard Tab
+
+**Statistical Price Forecast (Bell Curve)**
+Uses the normal distribution to predict where the index will settle by expiry.
+- **1σ zone (68.2%)**: The index has a 68% chance of staying within this range.
+- **2σ zone (95.4%)**: 95% probability zone.
+- Vertical lines mark current spot, max pain, support, and resistance.
+
+**PCR Trend**: If auto-refresh is on, tracks how PCR shifts during the session. A rising PCR = growing bullish sentiment.
+
+**OI Change Tables**: Shows which strikes saw the most new position build-up today.
+- Fresh Call OI build-up at higher strikes = resistance strengthening = bearish.
+- Fresh Put OI build-up at lower strikes = support strengthening = bullish.
+
+---
+
+### 📋 Options Chain Tab
+
+The full chain with live Greeks, OI, volume, and IV per strike.
+
+**How to read it:**
+- **Yellow row** = ATM strike
+- **Green tint** = in-the-money calls (below spot)
+- **Red tint** = in-the-money puts (above spot)
+- **Blue intensity on OI** = brighter = higher OI = stronger support/resistance at that strike
+- **Green OI Change** = new positions being built (bullish for puts, bearish for calls)
+- **Red OI Change** = positions being unwound
+
+**Key Greeks:**
+- **Delta**: How much the option moves per ₹1 move in spot. ATM ≈ 0.5.
+- **Theta**: How much you lose per day from time decay. Higher near expiry.
+- **Gamma**: How fast delta changes. Highest at ATM, near expiry.
+- **Vega**: Sensitivity to IV changes. Higher for longer-dated options.
+
+---
+
+### 🛡️ Strategy Builder Tab
+
+**Engine Recommendation**: Auto-suggests a strategy based on:
+- **ADX > 25** → Trending market → use directional strategies (debit spreads)
+- **IV Pct > 70%** → Expensive options → sell premium (iron butterfly, short straddle)
+- **IV Pct < 30%** → Cheap options → buy premium (long straddle)
+- **Otherwise** → Range-bound → iron condor
+
+**Available Strategies:**
+
+| Strategy | When to Use | Risk Profile |
+|----------|-------------|--------------|
+| **Iron Condor** | Range-bound, moderate IV | Defined risk, defined reward. Profits if index stays between sell strikes. |
+| **Short Straddle** | Expecting minimal movement, high IV | Unlimited risk! Maximum premium collection but dangerous if market moves big. |
+| **Iron Butterfly** | Expecting pinning at ATM, high IV | Defined risk. Like a tighter iron condor centered at ATM. |
+| **Bull Put Spread** | Mildly bullish | Defined risk. Profits if index stays above sell strike. |
+| **Bear Call Spread** | Mildly bearish | Defined risk. Profits if index stays below sell strike. |
+
+**P&L Heatmap**: Each cell shows your exact ₹ profit or loss based on:
+- **Columns** = where the index might be at various levels
+- **Rows** = how many days remain until expiry
+- **Green cells** = you make money. **Red cells** = you lose money.
+- The **"You Are Here"** marker shows where spot currently sits.
+
+**Payoff at Expiry**: The classic hockey-stick diagram showing your final P&L.
+- **Green zone** = profit area. **Red zone** = loss area.
+- Annotated arrows point to max profit and max loss levels.
+
+**Summary Box**: Quick-glance numbers — what you collect, best/worst case, risk:reward ratio.
+
+---
+
+### 📈 Charts Tab
+
+**OI Distribution**: Bar chart of Call vs Put open interest per strike.
+- Tallest Call OI bar = strongest resistance.
+- Tallest Put OI bar = strongest support.
+- Max Pain marker shows the "magnet" strike.
+
+**OI Change**: Shows where NEW positions were opened today.
+- Positive bars = build-up (new positions). Negative = unwinding.
+- Interpreting: Call build-up at higher strikes = bearish. Put build-up at lower strikes = bullish.
+
+**Delta Skew**: Shows how delta varies across strikes.
+- Steep skew = market pricing in directional risk.
+- Flat = neutral expectations.
+
+**IV Smile**: Implied volatility across strikes.
+- U-shape ("smile") = normal. Skewed = market expects movement in one direction.
+- Higher IV at OTM puts = market pricing in downside risk (fear).
+
+**Cumulative OI**: Running total of Call vs Put OI from lowest to highest strike.
+- Where Put cumulative OI exceeds Call = bullish zone.
+- Where Call exceeds Put = bearish zone.
+
+---
+
+### ⚙️ Engine Parameters
+
+| Parameter | What It Controls |
+|-----------|-----------------|
+| **IV Fallback** | Only used when live IV can't be computed (market closed). During market hours, all IV is live. |
+| **Risk-Free Rate** | Auto-fetched from World Bank (India rate). Editable. Feeds into all Black-Scholes calculations. |
+| **Strike Depth** | How many strikes above/below ATM to show in the chain. Higher = more strikes but slower load. |
+| **Auto-Refresh** | When enabled, the entire dashboard reloads every N seconds with fresh data. |
+
+---
+
+### 💡 Pro Tips
+
+1. **Best used during market hours** (9:15 AM – 3:30 PM IST). After hours, LTPs freeze and some features show theoretical values.
+2. **Watch PCR + OI Change together**: A rising PCR with heavy put OI build-up at support = very bullish setup.
+3. **Max Pain is a magnet, not a guarantee**: It works best 2-3 days before expiry.
+4. **IV Percentile > 70% on expiry week** = premium selling sweet spot. Time decay is on your side.
+5. **ADX below 20 + high IV** = the ideal iron condor/butterfly setup. No trend + expensive options = sell premium.
+6. **VWAS diverging from spot** = smart money positioning differently from current price. Follow VWAS for directional hints.
+
+---
+
+*Built for Indian equity derivatives on NSE. Data from Upstox V2 API. Greeks via Black-Scholes. IV via Newton-Raphson.*
+"""
+
+# Help button in sidebar
+st.sidebar.markdown("---")
+if st.sidebar.button("📖 Help & User Guide", use_container_width=True):
+    st.session_state.show_help = True
+
+# Help dialog
+if st.session_state.get("show_help", False):
+    @st.dialog("📖 Upstox Alpha Engine — User Guide", width="large")
+    def show_help_dialog():
+        st.markdown(HELP_CONTENT)
+        if st.button("Close", use_container_width=True):
+            st.session_state.show_help = False
+            st.rerun()
+    show_help_dialog()
+
 # ═══════════════════════════════════════════════
 #  MAIN ENGINE
 # ═══════════════════════════════════════════════
