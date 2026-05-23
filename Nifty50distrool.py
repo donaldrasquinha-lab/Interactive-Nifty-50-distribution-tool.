@@ -325,6 +325,54 @@ def bs_greeks(S, K, T, r, sigma, opt="CE"):
     return {"price":round(price,2),"delta":round(delta,3),"gamma":round(gamma,5),"theta":round(theta,2),"vega":round(vega,2)}
 
 
+def implied_vol(market_price, S, K, T, r, opt="CE", max_iter=50, tol=1e-5):
+    """
+    Compute implied volatility from a market price using Newton-Raphson.
+    Returns IV as a decimal (e.g. 0.15 for 15%), or None if it can't converge.
+    """
+    if market_price <= 0 or T <= 0 or S <= 0 or K <= 0:
+        return None
+
+    # Intrinsic value check — price must exceed intrinsic
+    if opt == "CE":
+        intrinsic = max(0, S - K * np.exp(-r * T))
+    else:
+        intrinsic = max(0, K * np.exp(-r * T) - S)
+
+    if market_price < intrinsic * 0.95:
+        return None  # Price below intrinsic — bad data
+
+    # Initial guess from Brenner-Subrahmanyam approximation
+    sigma = np.sqrt(2 * np.pi / T) * (market_price / S)
+    sigma = max(0.01, min(sigma, 5.0))  # Clamp to sane range
+
+    for _ in range(max_iter):
+        d1 = (np.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * np.sqrt(T))
+        d2 = d1 - sigma * np.sqrt(T)
+
+        if opt == "CE":
+            bs_price = S * norm.cdf(d1) - K * np.exp(-r * T) * norm.cdf(d2)
+        else:
+            bs_price = K * np.exp(-r * T) * norm.cdf(-d2) - S * norm.cdf(-d1)
+
+        vega = S * norm.pdf(d1) * np.sqrt(T)  # NOT divided by 100 here
+
+        diff = bs_price - market_price
+
+        if abs(diff) < tol:
+            if 0.01 <= sigma <= 3.0:
+                return sigma
+            return None
+
+        if vega < 1e-10:
+            break  # Vega too small to move sigma meaningfully
+
+        sigma -= diff / vega
+        sigma = max(0.005, min(sigma, 5.0))  # Keep bounded
+
+    return None  # Didn't converge
+
+
 def compute_max_pain(df_chain: pd.DataFrame) -> float:
     strikes = df_chain["Strike"].astype(float).values
     ce_oi = df_chain["CE OI"].astype(float).values
@@ -359,7 +407,7 @@ def compute_iv_percentile(candles_df: pd.DataFrame, current_iv: float, window=30
     return round(count_below / len(rv_series) * 100, 1)
 
 
-def compute_pnl_heatmap(strategy_legs, lot_size, spot_price, diff, iv_used):
+def compute_pnl_heatmap(strategy_legs, lot_size, spot_price, diff, iv_used, rfr):
     """
     Compute strategy P&L across a grid of spot prices and days-to-expiry.
     Each leg: {"strike": K, "type": "CE"/"PE", "action": "BUY"/"SELL", "premium": ltp}
@@ -386,7 +434,7 @@ def compute_pnl_heatmap(strategy_legs, lot_size, spot_price, diff, iv_used):
                 else:
                     T = dte / 365
                     sigma = iv_used if iv_used > 0 else 0.15
-                    val = bs_greeks(s, K, T, 0.07, sigma, leg["type"])["price"]
+                    val = bs_greeks(s, K, T, rfr, sigma, leg["type"])["price"]
 
                 if leg["action"] == "BUY":
                     total += (val - prem)
@@ -410,9 +458,46 @@ index_meta = INDICES[selected_index_name]
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("### ⚙️ Engine Parameters")
-iv_override = st.sidebar.slider("Manual IV Override (%)", 5.0, 80.0, 15.0, 0.5) / 100
-risk_free_rate = st.sidebar.slider("Risk-Free Rate (%)", 0.0, 12.0, 7.0, 0.1) / 100
+iv_override = st.sidebar.slider("IV Fallback (used when live IV unavailable) %", 5.0, 80.0, 15.0, 0.5) / 100
 strike_depth = st.sidebar.slider("Strike Depth Around ATM", 3, 15, 7)
+
+# ── Risk-Free Rate: fetch live India 10Y G-Sec yield ──
+def fetch_risk_free_rate():
+    """
+    Fetch India 10Y government bond yield as risk-free rate proxy.
+    Uses RBI/market data. Falls back to 7.0% if unavailable.
+    """
+    try:
+        # Try fetching from a public API
+        r = requests.get(
+            "https://api.worldbank.org/v2/country/IND/indicator/FR.INR.RINR?date=2024:2026&format=json",
+            timeout=5
+        )
+        if r.status_code == 200:
+            data = r.json()
+            if len(data) > 1 and data[1]:
+                for entry in data[1]:
+                    if entry.get("value") is not None:
+                        return round(float(entry["value"]), 2)
+    except Exception:
+        pass
+
+    # Fallback: use India 91-day T-bill rate approximation
+    # As of mid-2025, India 10Y is ~7.0-7.1%
+    return 7.0
+
+@st.cache_data(ttl=3600)  # Cache for 1 hour
+def get_cached_rfr():
+    return fetch_risk_free_rate()
+
+live_rfr = get_cached_rfr()
+rfr_is_live = live_rfr != 7.0
+
+risk_free_rate = st.sidebar.number_input(
+    f"Risk-Free Rate % {'(live)' if rfr_is_live else '(default)'}",
+    min_value=0.0, max_value=15.0, value=float(live_rfr), step=0.1,
+    help="India 10Y G-Sec yield. Auto-fetched; editable if you want to override."
+) / 100
 
 st.sidebar.markdown("---")
 auto_refresh = st.sidebar.checkbox("🔄 Auto-Refresh", value=False)
@@ -505,14 +590,17 @@ try:
         if abs(sp - atm_strike) <= strike_depth * diff:
             display_strikes.add(sp)
 
-    # σ bounds for strategy (compute early so we know which strikes to fetch)
-    _std_tmp = spot_price * iv_override * np.sqrt(tte_years)
+    # σ bounds for pre-fetch (uses slider as estimate; real calc happens after live IV is known)
+    # Use a generous range (max of slider IV and 30%) to ensure we fetch enough keys
+    _pre_iv = max(iv_override, 0.30)
+    _std_tmp = spot_price * _pre_iv * np.sqrt(tte_years)
     _lo1_tmp = spot_price - _std_tmp
     _hi1_tmp = spot_price + _std_tmp
     _ic_sell_put = round(_lo1_tmp / diff) * diff
     _ic_sell_call = round(_hi1_tmp / diff) * diff
     strategy_strikes = {atm_strike, _ic_sell_put, _ic_sell_call,
-                        _ic_sell_put - diff, _ic_sell_call + diff}
+                        _ic_sell_put - diff, _ic_sell_call + diff,
+                        _ic_sell_put - 2*diff, _ic_sell_call + 2*diff}  # Extra buffer
 
     all_needed_strikes = display_strikes | strategy_strikes
 
@@ -561,8 +649,31 @@ try:
         ce_iv_raw = float(ce_md.get("iv", 0) or 0)
         pe_iv_raw = float(pe_md.get("iv", 0) or 0)
 
-        ce_sigma = (ce_iv_raw/100) if ce_iv_raw and ce_iv_raw > 0 else iv_override
-        pe_sigma = (pe_iv_raw/100) if pe_iv_raw and pe_iv_raw > 0 else iv_override
+        # ── IV Resolution: Live Market Price → Chain IV → Manual Override ──
+        # Tier 1: Compute IV from live market LTP using Newton-Raphson
+        ce_sigma = None
+        pe_sigma = None
+
+        if ce_ltp > 0:
+            ce_sigma = implied_vol(ce_ltp, spot_price, sp, tte_years, risk_free_rate, "CE")
+        if pe_ltp > 0:
+            pe_sigma = implied_vol(pe_ltp, spot_price, sp, tte_years, risk_free_rate, "PE")
+
+        # Tier 2: Chain-reported IV (if API provides it)
+        if ce_sigma is None and ce_iv_raw > 0:
+            ce_sigma = ce_iv_raw / 100
+        if pe_sigma is None and pe_iv_raw > 0:
+            pe_sigma = pe_iv_raw / 100
+
+        # Tier 3: Manual slider fallback (will be replaced by iv_for_sigma after ATM IV is known)
+        if ce_sigma is None:
+            ce_sigma = iv_override  # Temporary; best we can do before ATM IV is computed
+        if pe_sigma is None:
+            pe_sigma = iv_override
+
+        # Track source for display
+        ce_iv_source = "live" if (ce_ltp > 0 and implied_vol(ce_ltp, spot_price, sp, tte_years, risk_free_rate, "CE") is not None) else ("chain" if ce_iv_raw > 0 else "manual")
+        pe_iv_source = "live" if (pe_ltp > 0 and implied_vol(pe_ltp, spot_price, sp, tte_years, risk_free_rate, "PE") is not None) else ("chain" if pe_iv_raw > 0 else "manual")
 
         ce_g = bs_greeks(spot_price, sp, tte_years, risk_free_rate, ce_sigma, "CE")
         pe_g = bs_greeks(spot_price, sp, tte_years, risk_free_rate, pe_sigma, "PE")
@@ -597,10 +708,49 @@ try:
     resistance = df.loc[df["CE OI"].idxmax(), "Strike"] if not df.empty else atm_strike
     support = df.loc[df["PE OI"].idxmax(), "Strike"] if not df.empty else atm_strike
 
-    # IV Percentile
+    # IV Percentile — use live-computed ATM IV
     atm_row = df[df["Strike"] == atm_strike]
     atm_iv = float(atm_row.iloc[0]["CE IV"]) if not atm_row.empty else iv_override * 100
+    atm_iv_is_live = atm_iv != iv_override * 100  # True if IV came from market, not slider
     iv_pct = compute_iv_percentile(candles_df, atm_iv / 100, window=20)
+
+    # Use live ATM IV for σ calculations when available
+    iv_for_sigma = atm_iv / 100 if atm_iv_is_live else iv_override
+
+    # ── Recompute Greeks for strikes that used manual IV fallback ──
+    # Now that iv_for_sigma is known, upgrade any strike stuck on iv_override
+    if atm_iv_is_live:
+        for idx, row in df.iterrows():
+            sp = row["Strike"]
+            ce_iv_val = row["CE IV"]
+            pe_iv_val = row["PE IV"]
+            recompute = False
+
+            # If CE IV equals the slider value, it was a fallback — use live ATM IV instead
+            if abs(ce_iv_val - iv_override * 100) < 0.01:
+                ce_sigma_new = iv_for_sigma
+                df.at[idx, "CE IV"] = round(iv_for_sigma * 100, 1)
+                recompute = True
+            else:
+                ce_sigma_new = ce_iv_val / 100
+
+            if abs(pe_iv_val - iv_override * 100) < 0.01:
+                pe_sigma_new = iv_for_sigma
+                df.at[idx, "PE IV"] = round(iv_for_sigma * 100, 1)
+            else:
+                pe_sigma_new = pe_iv_val / 100
+
+            if recompute or abs(pe_iv_val - iv_override * 100) < 0.01:
+                ce_g = bs_greeks(spot_price, sp, tte_years, risk_free_rate, ce_sigma_new, "CE")
+                pe_g = bs_greeks(spot_price, sp, tte_years, risk_free_rate, pe_sigma_new, "PE")
+                df.at[idx, "CE Delta"] = ce_g["delta"]
+                df.at[idx, "CE Gamma"] = ce_g["gamma"]
+                df.at[idx, "CE Theta"] = ce_g["theta"]
+                df.at[idx, "CE Vega"] = ce_g["vega"]
+                df.at[idx, "PE Delta"] = pe_g["delta"]
+                df.at[idx, "PE Gamma"] = pe_g["gamma"]
+                df.at[idx, "PE Theta"] = pe_g["theta"]
+                df.at[idx, "PE Vega"] = pe_g["vega"]
 
     # Volume-Weighted Average Strike
     total_vol = df["CE Vol"].sum() + df["PE Vol"].sum()
@@ -630,8 +780,8 @@ try:
         sentiment, sent_color = "NEUTRAL", "#64748b"
         card_bg = "linear-gradient(135deg, #475569, #334155)"
 
-    # σ bounds
-    std_price = spot_price * iv_override * np.sqrt(tte_years)
+    # σ bounds — uses live ATM IV when available
+    std_price = spot_price * iv_for_sigma * np.sqrt(tte_years)
     lo1 = spot_price - std_price
     hi1 = spot_price + std_price
     lo2 = spot_price - 2*std_price
@@ -660,6 +810,7 @@ try:
 
     # ── IV Percentile Gauge ──
     iv_color = "#22c55e" if iv_pct < 30 else "#f59e0b" if iv_pct < 70 else "#ef4444"
+    iv_source_tag = '<span style="font-size:9px; color:#4ade80; background:rgba(34,197,94,0.15); padding:1px 6px; border-radius:3px; margin-left:6px;">LIVE</span>' if atm_iv_is_live else '<span style="font-size:9px; color:#f59e0b; background:rgba(245,158,11,0.15); padding:1px 6px; border-radius:3px; margin-left:6px;">MANUAL</span>'
     st.markdown(f"""
     <div style="display:flex; align-items:center; gap:14px; margin:8px 0 4px 0;">
         <span style="font-size:11px; color:#64748b; text-transform:uppercase; letter-spacing:1.5px; font-weight:600; min-width:110px;">IV Percentile</span>
@@ -667,7 +818,8 @@ try:
             <div class="iv-gauge-marker" style="left:{min(iv_pct, 100)}%;"></div>
         </div>
         <span class="iv-pct-label" style="color:{iv_color};">{iv_pct:.0f}%</span>
-        <span style="font-size:11px; color:#64748b;">ATM IV: {atm_iv:.1f}%</span>
+        <span style="font-size:11px; color:#e2e8f0; font-weight:600;">ATM IV: {atm_iv:.1f}%</span>
+        {iv_source_tag}
     </div>
     """, unsafe_allow_html=True)
 
@@ -896,11 +1048,11 @@ try:
                     if pe_ltp == 0:
                         pe_ltp = float(m.iloc[0]["PE LTP"])
 
-            # Last resort: BS theoretical price
+            # Last resort: BS theoretical price using live ATM IV
             if ce_ltp == 0:
-                ce_ltp = bs_greeks(spot_price, strike, tte_years, risk_free_rate, iv_override, "CE")["price"]
+                ce_ltp = bs_greeks(spot_price, strike, tte_years, risk_free_rate, iv_for_sigma, "CE")["price"]
             if pe_ltp == 0:
-                pe_ltp = bs_greeks(spot_price, strike, tte_years, risk_free_rate, iv_override, "PE")["price"]
+                pe_ltp = bs_greeks(spot_price, strike, tte_years, risk_free_rate, iv_for_sigma, "PE")["price"]
 
             return ce_ltp, pe_ltp
 
@@ -1058,7 +1210,7 @@ try:
             st.markdown("#### 🗺️ P&L Heatmap — What You Make or Lose")
             st.caption("Each cell shows your total profit (green) or loss (red) in ₹, based on where the index lands (columns) and how many days remain until expiry (rows). Hover any cell for details.")
 
-            spot_arr, dte_arr, pnl_mat = compute_pnl_heatmap(legs, lot_size, spot_price, diff, iv_override)
+            spot_arr, dte_arr, pnl_mat = compute_pnl_heatmap(legs, lot_size, spot_price, diff, iv_for_sigma, risk_free_rate)
 
             # Format labels
             spot_labels = [f"{int(s):,}" for s in spot_arr]
@@ -1240,7 +1392,6 @@ try:
             st.plotly_chart(fig_payoff, use_container_width=True)
 
             # ── Quick Summary Box ──
-        try: 
             if has_real_data:
                 net_credit = sum(
                     leg["premium"] * (1 if leg["action"] == "SELL" else -1)
@@ -1248,45 +1399,36 @@ try:
                 )
                 net_credit_total = net_credit * lot_size
 
-                # Keep this inside the try block so variables are accessed safely
                 summary_color = "#4ade80" if net_credit > 0 else "#f87171"
-
-                if max_l != 0:
-                    rr_ratio = abs(max_p / max_l)
-                    
-                    st.markdown(f"""
-                    <div style="border:1px solid #1e293b; border-radius:10px; padding:16px; margin:10px 0;
-                                background:rgba(17,24,39,0.6); display:flex; flex-wrap:wrap; gap:24px; align-items:center;">
-                        <div>
-                            <div style="font-size:10px; color:#64748b; text-transform:uppercase; letter-spacing:1.5px;">You Collect</div>
-                            <div style="font-size:22px; font-weight:800; color:{summary_color}; font-family:'JetBrains Mono',monospace;">
-                                ₹{net_credit_total:,.0f}
-                            </div>
-                        </div>
-                        <div>
-                            <div style="font-size:10px; color:#64748b; text-transform:uppercase; letter-spacing:1.5px;">Best Case</div>
-                            <div style="font-size:22px; font-weight:800; color:#4ade80; font-family:'JetBrains Mono',monospace;">
-                                ₹{max_p:,.0f}
-                            </div>
-                        </div>
-                        <div>
-                            <div style="font-size:10px; color:#64748b; text-transform:uppercase; letter-spacing:1.5px;">Worst Case</div>
-                            <div style="font-size:22px; font-weight:800; color:#f87171; font-family:'JetBrains Mono',monospace;">
-                                ₹{max_l:,.0f}
-                            </div>
-                        </div>
-                        <div>
-                            <div style="font-size:10px; color:#64748b; text-transform:uppercase; letter-spacing:1.5px;">Risk:Reward</div>
-                            <div style="font-size:22px; font-weight:800; color:#e2e8f0; font-family:'JetBrains Mono',monospace;">
-                                1 : {rr_ratio:.1f}
-                            </div>
+                st.markdown(f"""
+                <div style="border:1px solid #1e293b; border-radius:10px; padding:16px; margin:10px 0;
+                            background:rgba(17,24,39,0.6); display:flex; flex-wrap:wrap; gap:24px; align-items:center;">
+                    <div>
+                        <div style="font-size:10px; color:#64748b; text-transform:uppercase; letter-spacing:1.5px;">You Collect</div>
+                        <div style="font-size:22px; font-weight:800; color:{summary_color}; font-family:'JetBrains Mono',monospace;">
+                            ₹{net_credit_total:,.0f}
                         </div>
                     </div>
-                    """, unsafe_allow_html=True)
-        except Exception as e:
-            st.error(f"Error in metric calculation block: {e}")
-
-
+                    <div>
+                        <div style="font-size:10px; color:#64748b; text-transform:uppercase; letter-spacing:1.5px;">Best Case</div>
+                        <div style="font-size:22px; font-weight:800; color:#4ade80; font-family:'JetBrains Mono',monospace;">
+                            ₹{max_p:,.0f}
+                        </div>
+                    </div>
+                    <div>
+                        <div style="font-size:10px; color:#64748b; text-transform:uppercase; letter-spacing:1.5px;">Worst Case</div>
+                        <div style="font-size:22px; font-weight:800; color:#f87171; font-family:'JetBrains Mono',monospace;">
+                            ₹{max_l:,.0f}
+                        </div>
+                    </div>
+                    <div>
+                        <div style="font-size:10px; color:#64748b; text-transform:uppercase; letter-spacing:1.5px;">Risk:Reward</div>
+                        <div style="font-size:22px; font-weight:800; color:#e2e8f0; font-family:'JetBrains Mono',monospace;">
+                            1 : {abs(max_p/max_l):.1f}
+                        </div>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True) if max_l != 0 else None
 
     # ──────────────────────────────────
     #  TAB 4: CHARTS
