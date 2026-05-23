@@ -709,20 +709,10 @@ The full chain with live Greeks, OI, volume, and IV per strike.
 *Built for Indian equity derivatives on NSE. Data from Upstox V2 API. Greeks via Black-Scholes. IV via Newton-Raphson.*
 """
 
-# Help button in sidebar
+# Help button in sidebar — uses expander, no session state, no pop-up on refresh
 st.sidebar.markdown("---")
-if st.sidebar.button("📖 Help & User Guide", use_container_width=True):
-    st.session_state.show_help = True
-
-# Help dialog
-if st.session_state.get("show_help", False):
-    @st.dialog("📖 Upstox Alpha Engine — User Guide", width="large")
-    def show_help_dialog():
-        st.markdown(HELP_CONTENT)
-        if st.button("Close", use_container_width=True):
-            st.session_state.show_help = False
-            st.rerun()
-    show_help_dialog()
+with st.sidebar.expander("📖 Help & User Guide"):
+    st.markdown(HELP_CONTENT)
 
 # ═══════════════════════════════════════════════
 #  MAIN ENGINE
@@ -1211,23 +1201,246 @@ try:
     with tab_strat:
         st.markdown("#### 🛡️ Strategy Playbook")
 
-        # Recommendation
+        # ── Smart Strategy Scoring Engine ──
         adx_v = adx_metrics["adx"] if adx_metrics else 15
-        if adx_v > 25:
-            rec = "Directional: Debit Spreads / Long Options"
-            rec_icon = "🚀"
+        plus_di = adx_metrics["plus_di"] if adx_metrics else 0
+        minus_di = adx_metrics["minus_di"] if adx_metrics else 0
+        is_trending = adx_v > 25
+        is_bullish_trend = plus_di > minus_di
+        is_range_bound = adx_v < 20
+        spot_vs_maxpain = spot_price - max_pain  # positive = spot above max pain
+        spot_near_support = abs(spot_price - support) <= 2 * diff
+        spot_near_resistance = abs(spot_price - resistance) <= 2 * diff
+
+        # Score each strategy (higher = better fit for current conditions)
+        scores = {}
+        reasons = {}
+
+        # ── Iron Condor ──
+        ic_score = 0
+        ic_why = []
+        if is_range_bound:
+            ic_score += 30
+            ic_why.append(f"ADX is {adx_v} (below 20) — market is range-bound, ideal for condors")
+        elif not is_trending:
+            ic_score += 15
+            ic_why.append(f"ADX is {adx_v} — no strong trend detected")
+        if 0.85 <= pcr <= 1.15:
+            ic_score += 20
+            ic_why.append(f"PCR is {pcr} — balanced put/call sentiment supports range expectation")
+        if 30 <= iv_pct <= 70:
+            ic_score += 15
+            ic_why.append(f"IV Percentile at {iv_pct:.0f}% — moderate, good for selling with wings")
         elif iv_pct > 70:
-            rec = "High IV: Iron Butterfly / Short Straddle"
-            rec_icon = "🦋"
-        elif iv_pct < 30:
-            rec = "Low IV: Long Straddle / Calendar Spread"
-            rec_icon = "📈"
+            ic_score += 10
+            ic_why.append(f"IV Percentile at {iv_pct:.0f}% — high IV boosts premium collected")
+        if tte_days <= 7:
+            ic_score += 10
+            ic_why.append(f"Only {tte_days:.1f} DTE — short expiry favors premium sellers")
+        if abs(spot_vs_maxpain) < 2 * diff:
+            ic_score += 10
+            ic_why.append(f"Spot is near Max Pain ({max_pain:,.0f}) — likely to stay pinned")
+        scores["Iron Condor"] = ic_score
+        reasons["Iron Condor"] = ic_why
+
+        # ── Short Straddle ──
+        ss_score = 0
+        ss_why = []
+        if is_range_bound:
+            ss_score += 25
+            ss_why.append(f"ADX at {adx_v} — range-bound market suits straddle selling")
+        if iv_pct > 60:
+            ss_score += 30
+            ss_why.append(f"IV Percentile at {iv_pct:.0f}% — elevated IV means fat premiums to collect")
+        elif iv_pct > 40:
+            ss_score += 10
+            ss_why.append(f"IV Percentile at {iv_pct:.0f}% — decent premium available")
+        if 0.90 <= pcr <= 1.10:
+            ss_score += 15
+            ss_why.append(f"PCR at {pcr} — very balanced, no directional pressure")
+        if tte_days <= 5:
+            ss_score += 15
+            ss_why.append(f"{tte_days:.1f} DTE — rapid theta decay maximizes straddle income")
+        if is_trending:
+            ss_score -= 20
+            ss_why.append(f"⚠️ ADX at {adx_v} — trending market is dangerous for naked straddles")
+        scores["Short Straddle"] = ss_score
+        reasons["Short Straddle"] = ss_why
+
+        # ── Iron Butterfly ──
+        ib_score = 0
+        ib_why = []
+        if iv_pct > 65:
+            ib_score += 30
+            ib_why.append(f"IV Percentile at {iv_pct:.0f}% — high IV is the butterfly's best friend")
+        if is_range_bound:
+            ib_score += 20
+            ib_why.append(f"ADX at {adx_v} — low trend strength supports pinning at ATM")
+        if abs(spot_vs_maxpain) < diff:
+            ib_score += 20
+            ib_why.append(f"Spot is very close to Max Pain ({max_pain:,.0f}) — high pin probability")
+        elif abs(spot_vs_maxpain) < 2 * diff:
+            ib_score += 10
+            ib_why.append(f"Spot is near Max Pain — moderate pin probability")
+        if tte_days <= 3:
+            ib_score += 15
+            ib_why.append(f"Only {tte_days:.1f} DTE — expiry-week pinning effect strongest now")
+        if is_trending:
+            ib_score -= 10
+            ib_why.append(f"⚠️ ADX at {adx_v} — trending market makes ATM pinning less likely")
+        scores["Iron Butterfly"] = ib_score
+        reasons["Iron Butterfly"] = ib_why
+
+        # ── Bull Put Spread ──
+        bps_score = 0
+        bps_why = []
+        if pcr > 1.10:
+            bps_score += 25
+            bps_why.append(f"PCR at {pcr} — heavy put writing signals support below, bullish")
+        elif pcr > 1.0:
+            bps_score += 10
+            bps_why.append(f"PCR at {pcr} — slightly bullish lean")
+        if is_bullish_trend and is_trending:
+            bps_score += 25
+            bps_why.append(f"+DI ({plus_di}) > -DI ({minus_di}) with ADX {adx_v} — confirmed bullish trend")
+        elif is_bullish_trend:
+            bps_score += 10
+            bps_why.append(f"+DI ({plus_di}) > -DI ({minus_di}) — directional bias is upward")
+        if spot_price > max_pain:
+            bps_score += 10
+            bps_why.append(f"Spot ({spot_price:,.0f}) above Max Pain ({max_pain:,.0f}) — bullish positioning")
+        if spot_near_support:
+            bps_score += 15
+            bps_why.append(f"Spot near strong support at {support:,.0f} — low risk for put selling")
+        if iv_pct > 40:
+            bps_score += 5
+            bps_why.append(f"IV Percentile at {iv_pct:.0f}% — adequate premium for credit spread")
+        if pcr < 0.85:
+            bps_score -= 15
+            bps_why.append(f"⚠️ PCR at {pcr} — bearish OI skew argues against bullish bets")
+        scores["Bull Put Spread"] = bps_score
+        reasons["Bull Put Spread"] = bps_why
+
+        # ── Bear Call Spread ──
+        bcs_score = 0
+        bcs_why = []
+        if pcr < 0.90:
+            bcs_score += 25
+            bcs_why.append(f"PCR at {pcr} — heavy call writing signals resistance above, bearish")
+        elif pcr < 1.0:
+            bcs_score += 10
+            bcs_why.append(f"PCR at {pcr} — slightly bearish lean")
+        if not is_bullish_trend and is_trending:
+            bcs_score += 25
+            bcs_why.append(f"-DI ({minus_di}) > +DI ({plus_di}) with ADX {adx_v} — confirmed bearish trend")
+        elif not is_bullish_trend:
+            bcs_score += 10
+            bcs_why.append(f"-DI ({minus_di}) > +DI ({plus_di}) — directional bias is downward")
+        if spot_price < max_pain:
+            bcs_score += 10
+            bcs_why.append(f"Spot ({spot_price:,.0f}) below Max Pain ({max_pain:,.0f}) — bearish positioning")
+        if spot_near_resistance:
+            bcs_score += 15
+            bcs_why.append(f"Spot near strong resistance at {resistance:,.0f} — ceiling likely to hold")
+        if iv_pct > 40:
+            bcs_score += 5
+            bcs_why.append(f"IV Percentile at {iv_pct:.0f}% — adequate premium for credit spread")
+        if pcr > 1.15:
+            bcs_score -= 15
+            bcs_why.append(f"⚠️ PCR at {pcr} — bullish OI skew argues against bearish bets")
+        scores["Bear Call Spread"] = bcs_score
+        reasons["Bear Call Spread"] = bcs_why
+
+        # ── Rank strategies ──
+        ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+        best_name, best_score = ranked[0]
+        second_name, second_score = ranked[1]
+
+        # Strategy icons and colors
+        strat_meta = {
+            "Iron Condor":     {"icon": "📊", "color": "#3b82f6", "risk": "Defined", "type": "Neutral"},
+            "Short Straddle":  {"icon": "🔥", "color": "#f59e0b", "risk": "Unlimited", "type": "Neutral"},
+            "Iron Butterfly":  {"icon": "🦋", "color": "#8b5cf6", "risk": "Defined", "type": "Neutral"},
+            "Bull Put Spread": {"icon": "📈", "color": "#22c55e", "risk": "Defined", "type": "Bullish"},
+            "Bear Call Spread":{"icon": "📉", "color": "#ef4444", "risk": "Defined", "type": "Bearish"},
+        }
+
+        bm = strat_meta[best_name]
+        best_reasons_html = "".join(
+            f'<div style="font-size:13px; color:#e2e8f0; line-height:1.7; padding:2px 0;">✓ {r}</div>'
+            for r in reasons[best_name]
+        )
+
+        # Confidence label
+        if best_score >= 60:
+            conf_label = "HIGH CONFIDENCE"
+            conf_color = "#4ade80"
+        elif best_score >= 40:
+            conf_label = "MODERATE CONFIDENCE"
+            conf_color = "#fbbf24"
         else:
-            rec = "Range-bound: Iron Condor"
-            rec_icon = "📊"
+            conf_label = "LOW CONFIDENCE"
+            conf_color = "#f87171"
 
-        st.info(f"{rec_icon} **Engine Recommendation**: ADX={adx_v}, IV Pct={iv_pct:.0f}% → **{rec}**")
+        st.markdown(f"""
+        <div style="border:2px solid {bm['color']}; border-radius:12px; padding:20px; margin:8px 0 16px 0;
+                    background:rgba(17,24,39,0.8);">
+            <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">
+                <div style="display:flex; align-items:center; gap:10px;">
+                    <span style="font-size:10px; color:#94a3b8; text-transform:uppercase; letter-spacing:2px; font-weight:600;">
+                        Recommended Strategy
+                    </span>
+                </div>
+                <span style="font-size:10px; font-weight:700; color:{conf_color};
+                             background:rgba(0,0,0,0.3); padding:3px 10px; border-radius:4px;
+                             letter-spacing:1.5px;">
+                    {conf_label}
+                </span>
+            </div>
+            <div style="display:flex; align-items:center; gap:12px; margin-bottom:14px;">
+                <span style="font-size:32px;">{bm['icon']}</span>
+                <div>
+                    <div style="font-size:22px; font-weight:800; color:#ffffff; font-family:'JetBrains Mono',monospace;">
+                        {best_name}
+                    </div>
+                    <div style="font-size:12px; color:#94a3b8; margin-top:2px;">
+                        {bm['type']} · {bm['risk']} Risk · Score: {best_score}/100
+                    </div>
+                </div>
+            </div>
+            <div style="border-top:1px solid #1e293b; padding-top:12px; margin-top:4px;">
+                <div style="font-size:10px; color:#64748b; text-transform:uppercase; letter-spacing:1.5px; font-weight:600; margin-bottom:8px;">
+                    Why This Strategy Now
+                </div>
+                {best_reasons_html}
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
 
+        # Show runner-up as a smaller card
+        sm = strat_meta[second_name]
+        second_reasons_short = reasons[second_name][:2]
+        second_reasons_html = "".join(
+            f'<span style="font-size:11px; color:#94a3b8;">✓ {r}</span><br>'
+            for r in second_reasons_short
+        )
+        st.markdown(f"""
+        <div style="border:1px solid #1e293b; border-radius:8px; padding:12px 16px; margin:0 0 16px 0;
+                    background:rgba(17,24,39,0.5); display:flex; align-items:center; gap:14px;">
+            <span style="font-size:20px;">{sm['icon']}</span>
+            <div style="flex:1;">
+                <div style="font-size:13px; font-weight:700; color:#cbd5e1;">
+                    Runner-up: {second_name}
+                    <span style="font-size:11px; color:#64748b; font-weight:400; margin-left:6px;">
+                        Score: {second_score}/100
+                    </span>
+                </div>
+                {second_reasons_html}
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        # Strategy selector — user still picks
         strat_choice = st.selectbox("Select Strategy", ["Iron Condor", "Short Straddle", "Iron Butterfly", "Bull Put Spread", "Bear Call Spread"])
 
         def get_ltp(strike):
