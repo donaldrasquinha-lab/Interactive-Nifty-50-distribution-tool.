@@ -1180,96 +1180,88 @@ try:
         secondary_target = max_pain
 
     # Build signals HTML
-    signals_html = ""
+    signals_parts = []
     for title, bias, detail in signals:
         if bias == "bullish":
-            dot = '<span style="color:#4ade80;">●</span>'
+            dot_color = "#4ade80"
         elif bias == "bearish":
-            dot = '<span style="color:#f87171;">●</span>'
+            dot_color = "#f87171"
         else:
-            dot = '<span style="color:#fbbf24;">●</span>'
-        signals_html += f"""
-        <div style="padding:6px 0; border-bottom:1px solid rgba(30,41,59,0.5);">
-            <div style="font-size:13px; font-weight:600; color:#e2e8f0;">{dot} {title}</div>
-            <div style="font-size:11px; color:#94a3b8; margin-top:2px; padding-left:16px;">{detail}</div>
-        </div>"""
+            dot_color = "#fbbf24"
+        signals_parts.append(
+            '<div style="padding:6px 0; border-bottom:1px solid rgba(30,41,59,0.5);">'
+            '<div style="font-size:13px; font-weight:600; color:#e2e8f0;">'
+            '<span style="color:' + dot_color + ';">●</span> ' + title + '</div>'
+            '<div style="font-size:11px; color:#94a3b8; margin-top:2px; padding-left:16px;">' + detail + '</div>'
+            '</div>'
+        )
+    signals_html = "".join(signals_parts)
 
-    st.markdown(f"""
-    <div style="border:1px solid #1e293b; border-radius:12px; padding:0; margin:12px 0 14px 0;
-                background:{dir_bg}; overflow:hidden;">
-        <!-- Header -->
-        <div style="display:flex; align-items:center; justify-content:space-between;
-                    padding:16px 20px; border-bottom:1px solid #1e293b;">
-            <div style="display:flex; align-items:center; gap:10px;">
-                <span style="font-size:10px; color:#94a3b8; text-transform:uppercase; letter-spacing:2px; font-weight:600;">
-                    OI Change Directional Forecast
-                </span>
-            </div>
-            <div style="display:flex; align-items:center; gap:8px;">
-                <span style="font-size:22px;">{dir_icon}</span>
-                <span style="font-size:20px; font-weight:800; color:{dir_color}; font-family:'JetBrains Mono',monospace;">
-                    {dir_label}
-                </span>
-            </div>
-        </div>
-        <!-- Targets Row -->
-        <div style="display:flex; padding:14px 20px; gap:0; border-bottom:1px solid #1e293b;">
-            <div style="flex:1; text-align:center; border-right:1px solid #1e293b;">
-                <div style="font-size:9px; color:#64748b; text-transform:uppercase; letter-spacing:1.5px; font-weight:600;">
-                    Downside Target
-                </div>
-                <div style="font-family:'JetBrains Mono',monospace; font-size:20px; font-weight:800; color:#f87171; margin-top:4px;">
-                    {downside_target:,.0f}
-                </div>
-                <div style="font-size:11px; color:#f87171;">▼ {downside_pts:,.0f} pts</div>
-            </div>
-            <div style="flex:1; text-align:center; border-right:1px solid #1e293b;">
-                <div style="font-size:9px; color:#64748b; text-transform:uppercase; letter-spacing:1.5px; font-weight:600;">
-                    Spot Now
-                </div>
-                <div style="font-family:'JetBrains Mono',monospace; font-size:20px; font-weight:800; color:#ffffff; margin-top:4px;">
-                    {spot_price:,.1f}
-                </div>
-                <div style="font-size:11px; color:#94a3b8;">ATM {atm_strike:,.0f}</div>
-            </div>
-            <div style="flex:1; text-align:center;">
-                <div style="font-size:9px; color:#64748b; text-transform:uppercase; letter-spacing:1.5px; font-weight:600;">
-                    Upside Target
-                </div>
-                <div style="font-family:'JetBrains Mono',monospace; font-size:20px; font-weight:800; color:#4ade80; margin-top:4px;">
-                    {upside_target:,.0f}
-                </div>
-                <div style="font-size:11px; color:#4ade80;">▲ {upside_pts:,.0f} pts</div>
-            </div>
-        </div>
-        <!-- OI Change Summary -->
-        <div style="display:flex; padding:10px 20px; gap:0; border-bottom:1px solid #1e293b;">
-            <div style="flex:1; text-align:center;">
-                <span style="font-size:10px; color:#64748b; text-transform:uppercase; letter-spacing:1px;">Call OI Δ</span><br>
-                <span style="font-family:'JetBrains Mono',monospace; font-size:15px; font-weight:700;
-                             color:{'#f87171' if ce_chg_total > 0 else '#4ade80'};">
-                    {ce_chg_total:+,.0f}
-                </span>
-                <span style="font-size:10px; color:#64748b;"> {'(resistance ↑)' if ce_chg_total > 0 else '(ceiling removed)'}</span>
-            </div>
-            <div style="flex:1; text-align:center;">
-                <span style="font-size:10px; color:#64748b; text-transform:uppercase; letter-spacing:1px;">Put OI Δ</span><br>
-                <span style="font-family:'JetBrains Mono',monospace; font-size:15px; font-weight:700;
-                             color:{'#4ade80' if pe_chg_total > 0 else '#f87171'};">
-                    {pe_chg_total:+,.0f}
-                </span>
-                <span style="font-size:10px; color:#64748b;"> {'(support ↑)' if pe_chg_total > 0 else '(floor removed)'}</span>
-            </div>
-        </div>
-        <!-- Signals -->
-        <div style="padding:12px 20px;">
-            <div style="font-size:9px; color:#64748b; text-transform:uppercase; letter-spacing:1.5px; font-weight:600; margin-bottom:6px;">
-                Signal Breakdown
-            </div>
-            {signals_html}
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
+    # Pre-compute conditional values for clean HTML
+    ce_chg_color = "#f87171" if ce_chg_total > 0 else "#4ade80"
+    ce_chg_label = "(resistance ↑)" if ce_chg_total > 0 else "(ceiling removed)"
+    pe_chg_color = "#4ade80" if pe_chg_total > 0 else "#f87171"
+    pe_chg_label = "(support ↑)" if pe_chg_total > 0 else "(floor removed)"
+    ce_chg_str = f"{ce_chg_total:+,.0f}"
+    pe_chg_str = f"{pe_chg_total:+,.0f}"
+    ds_target_str = f"{downside_target:,.0f}"
+    ds_pts_str = f"{downside_pts:,.0f}"
+    spot_str = f"{spot_price:,.1f}"
+    atm_str = f"{atm_strike:,.0f}"
+    us_target_str = f"{upside_target:,.0f}"
+    us_pts_str = f"{upside_pts:,.0f}"
+
+    # Build the card HTML as a plain string (no f-string nesting issues)
+    forecast_html = (
+        '<div style="border:1px solid #1e293b; border-radius:12px; padding:0; margin:12px 0 14px 0;'
+        ' background:' + dir_bg + '; overflow:hidden;">'
+        # Header
+        '<div style="display:flex; align-items:center; justify-content:space-between;'
+        ' padding:16px 20px; border-bottom:1px solid #1e293b;">'
+        '<span style="font-size:10px; color:#94a3b8; text-transform:uppercase; letter-spacing:2px; font-weight:600;">'
+        'OI Change Directional Forecast</span>'
+        '<div style="display:flex; align-items:center; gap:8px;">'
+        '<span style="font-size:22px;">' + dir_icon + '</span>'
+        '<span style="font-size:20px; font-weight:800; color:' + dir_color + '; font-family:JetBrains Mono,monospace;">'
+        + dir_label + '</span></div></div>'
+        # Targets Row
+        '<div style="display:flex; padding:14px 20px; gap:0; border-bottom:1px solid #1e293b;">'
+        '<div style="flex:1; text-align:center; border-right:1px solid #1e293b;">'
+        '<div style="font-size:9px; color:#64748b; text-transform:uppercase; letter-spacing:1.5px; font-weight:600;">Downside Target</div>'
+        '<div style="font-family:JetBrains Mono,monospace; font-size:20px; font-weight:800; color:#f87171; margin-top:4px;">'
+        + ds_target_str + '</div>'
+        '<div style="font-size:11px; color:#f87171;">▼ ' + ds_pts_str + ' pts</div></div>'
+        '<div style="flex:1; text-align:center; border-right:1px solid #1e293b;">'
+        '<div style="font-size:9px; color:#64748b; text-transform:uppercase; letter-spacing:1.5px; font-weight:600;">Spot Now</div>'
+        '<div style="font-family:JetBrains Mono,monospace; font-size:20px; font-weight:800; color:#ffffff; margin-top:4px;">'
+        + spot_str + '</div>'
+        '<div style="font-size:11px; color:#94a3b8;">ATM ' + atm_str + '</div></div>'
+        '<div style="flex:1; text-align:center;">'
+        '<div style="font-size:9px; color:#64748b; text-transform:uppercase; letter-spacing:1.5px; font-weight:600;">Upside Target</div>'
+        '<div style="font-family:JetBrains Mono,monospace; font-size:20px; font-weight:800; color:#4ade80; margin-top:4px;">'
+        + us_target_str + '</div>'
+        '<div style="font-size:11px; color:#4ade80;">▲ ' + us_pts_str + ' pts</div></div></div>'
+        # OI Change Summary
+        '<div style="display:flex; padding:10px 20px; gap:0; border-bottom:1px solid #1e293b;">'
+        '<div style="flex:1; text-align:center;">'
+        '<span style="font-size:10px; color:#64748b; text-transform:uppercase; letter-spacing:1px;">Call OI Δ</span><br>'
+        '<span style="font-family:JetBrains Mono,monospace; font-size:15px; font-weight:700; color:' + ce_chg_color + ';">'
+        + ce_chg_str + '</span> '
+        '<span style="font-size:10px; color:#64748b;">' + ce_chg_label + '</span></div>'
+        '<div style="flex:1; text-align:center;">'
+        '<span style="font-size:10px; color:#64748b; text-transform:uppercase; letter-spacing:1px;">Put OI Δ</span><br>'
+        '<span style="font-family:JetBrains Mono,monospace; font-size:15px; font-weight:700; color:' + pe_chg_color + ';">'
+        + pe_chg_str + '</span> '
+        '<span style="font-size:10px; color:#64748b;">' + pe_chg_label + '</span></div></div>'
+        # Signals
+        '<div style="padding:12px 20px;">'
+        '<div style="font-size:9px; color:#64748b; text-transform:uppercase; letter-spacing:1.5px; font-weight:600; margin-bottom:6px;">'
+        'Signal Breakdown</div>'
+        + signals_html +
+        '</div></div>'
+    )
+
+    st.markdown(forecast_html, unsafe_allow_html=True)
 
     # ═══════════════════════════════════════════════
     #  TABBED LAYOUT
