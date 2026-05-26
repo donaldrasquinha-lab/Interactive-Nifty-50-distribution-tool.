@@ -745,14 +745,18 @@ try:
         st.stop()
 
     # Smart expiry selection: skip past expiries, auto-advance after 3:30 PM IST on expiry day
-    now = datetime.now()
+    # Use IST (UTC+5:30) since NSE operates on IST — server may be in UTC
+    from datetime import timezone
+    IST = timezone(timedelta(hours=5, minutes=30))
+    now = datetime.now(IST).replace(tzinfo=None)  # IST-aware then strip tz for naive comparison
+
     valid_expiries = []
     for e in expiries:
         e_dt = datetime.strptime(e, "%Y-%m-%d").replace(hour=15, minute=30)
         if e_dt > now:
             valid_expiries.append(e)
         elif e_dt.date() == now.date() and now.hour < 16:
-            # Expiry day but before 4 PM — still valid (market closes 3:30, give 30 min buffer)
+            # Expiry day but before 4 PM IST — still valid (market closes 3:30, give 30 min buffer)
             valid_expiries.append(e)
 
     if not valid_expiries:
@@ -776,6 +780,9 @@ try:
         else:
             dte_display = f"{hours_left:.1f}h left"
         dte_subtitle = "⚡ EXPIRY DAY"
+    elif tte_seconds <= 0:
+        dte_display = "EXPIRED"
+        dte_subtitle = None
     elif tte_days < 1:
         dte_display = f"{tte_days*24:.0f}h"
         dte_subtitle = "Tomorrow expiry"
@@ -2192,7 +2199,7 @@ try:
 
     st.markdown("---")
     f1, f2, f3 = st.columns(3)
-    f1.caption(f"🕐 {datetime.now().strftime('%H:%M:%S IST')}")
+    f1.caption(f"🕐 {now.strftime('%H:%M:%S')} IST")
     f2.caption(f"📅 Expiry: {selected_expiry} · {dte_display}")
     f3.caption(f"📊 {len(df)} strikes loaded · Lot: {lot_size}")
 
