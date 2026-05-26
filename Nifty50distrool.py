@@ -1058,6 +1058,220 @@ try:
     """, unsafe_allow_html=True)
 
     # ═══════════════════════════════════════════════
+    #  OI-CHANGE DIRECTIONAL FORECAST
+    # ═══════════════════════════════════════════════
+
+    # Analyze OI change patterns to predict direction and magnitude
+    ce_chg_total = df["CE OI Chg"].sum()
+    pe_chg_total = df["PE OI Chg"].sum()
+
+    # Weighted OI change — strikes closer to ATM matter more
+    df_tmp = df.copy()
+    df_tmp["dist"] = abs(df_tmp["Strike"] - atm_strike)
+    max_dist = df_tmp["dist"].max()
+    df_tmp["weight"] = 1.0 - (df_tmp["dist"] / (max_dist + 1)) if max_dist > 0 else 1.0
+
+    w_ce_buildup = (df_tmp["CE OI Chg"] * df_tmp["weight"]).sum()
+    w_pe_buildup = (df_tmp["PE OI Chg"] * df_tmp["weight"]).sum()
+
+    # Find the highest CE OI change strike (new resistance forming)
+    # and highest PE OI change strike (new support forming)
+    ce_chg_positive = df[df["CE OI Chg"] > 0]
+    pe_chg_positive = df[df["PE OI Chg"] > 0]
+
+    new_resistance = float(ce_chg_positive.loc[ce_chg_positive["CE OI Chg"].idxmax(), "Strike"]) if not ce_chg_positive.empty else resistance
+    new_support = float(pe_chg_positive.loc[pe_chg_positive["PE OI Chg"].idxmax(), "Strike"]) if not pe_chg_positive.empty else support
+
+    # OI interpretation matrix:
+    # Call OI build-up = writers selling calls = bearish (they don't think it'll go up)
+    # Put OI build-up = writers selling puts = bullish (they don't think it'll go down)
+    # Call OI unwinding = writers exiting calls = bullish (removing ceiling)
+    # Put OI unwinding = writers exiting puts = bearish (removing floor)
+
+    signals = []
+    direction_score = 0  # positive = bullish, negative = bearish
+
+    # Signal 1: Net OI change direction
+    if pe_chg_total > 0 and ce_chg_total > 0:
+        if pe_chg_total > ce_chg_total * 1.3:
+            direction_score += 25
+            signals.append(("Put OI build-up dominates Call build-up", "bullish",
+                           f"Put writers added {pe_chg_total:+,.0f} vs Call writers {ce_chg_total:+,.0f} — fresh support being built"))
+        elif ce_chg_total > pe_chg_total * 1.3:
+            direction_score -= 25
+            signals.append(("Call OI build-up dominates Put build-up", "bearish",
+                           f"Call writers added {ce_chg_total:+,.0f} vs Put writers {pe_chg_total:+,.0f} — fresh resistance being built"))
+        else:
+            signals.append(("Balanced OI build-up on both sides", "neutral",
+                           f"Call Δ: {ce_chg_total:+,.0f}, Put Δ: {pe_chg_total:+,.0f} — no clear directional bias from OI change"))
+    elif pe_chg_total > 0 and ce_chg_total <= 0:
+        direction_score += 30
+        signals.append(("Put build-up + Call unwinding", "bullish",
+                       f"Writers adding puts ({pe_chg_total:+,.0f}) and exiting calls ({ce_chg_total:+,.0f}) — strong bullish conviction"))
+    elif ce_chg_total > 0 and pe_chg_total <= 0:
+        direction_score -= 30
+        signals.append(("Call build-up + Put unwinding", "bearish",
+                       f"Writers adding calls ({ce_chg_total:+,.0f}) and exiting puts ({pe_chg_total:+,.0f}) — strong bearish conviction"))
+    elif ce_chg_total < 0 and pe_chg_total < 0:
+        signals.append(("Both Call and Put OI unwinding", "neutral",
+                       f"Writers exiting both sides — potential for big move in either direction (breakout likely)"))
+
+    # Signal 2: Where is the fresh build-up relative to spot
+    if not ce_chg_positive.empty:
+        ce_buildup_above = ce_chg_positive[ce_chg_positive["Strike"] > spot_price]["CE OI Chg"].sum()
+        ce_buildup_below = ce_chg_positive[ce_chg_positive["Strike"] <= spot_price]["CE OI Chg"].sum()
+        if ce_buildup_above > ce_buildup_below * 2:
+            direction_score -= 10
+            signals.append(("Call writing concentrated above spot", "bearish",
+                           f"Fresh Call OI build-up at {new_resistance:,.0f} — resistance wall forming"))
+    if not pe_chg_positive.empty:
+        pe_buildup_below = pe_chg_positive[pe_chg_positive["Strike"] < spot_price]["PE OI Chg"].sum()
+        pe_buildup_above = pe_chg_positive[pe_chg_positive["Strike"] >= spot_price]["PE OI Chg"].sum()
+        if pe_buildup_below > pe_buildup_above * 2:
+            direction_score += 10
+            signals.append(("Put writing concentrated below spot", "bullish",
+                           f"Fresh Put OI build-up at {new_support:,.0f} — support floor forming"))
+
+    # Signal 3: Near-ATM weighted bias
+    if abs(w_pe_buildup) + abs(w_ce_buildup) > 0:
+        near_atm_ratio = w_pe_buildup / (abs(w_pe_buildup) + abs(w_ce_buildup))
+        if near_atm_ratio > 0.6:
+            direction_score += 15
+            signals.append(("Near-ATM OI skews toward Put writing", "bullish",
+                           "Writers near ATM are predominantly selling puts — immediate upside expected"))
+        elif near_atm_ratio < 0.4:
+            direction_score -= 15
+            signals.append(("Near-ATM OI skews toward Call writing", "bearish",
+                           "Writers near ATM are predominantly selling calls — immediate downside expected"))
+
+    # Compute expected move from OI structure
+    upside_target = new_resistance  # Ceiling
+    downside_target = new_support   # Floor
+    upside_pts = upside_target - spot_price
+    downside_pts = spot_price - downside_target
+
+    # Direction determination
+    if direction_score >= 20:
+        dir_label = "BULLISH"
+        dir_color = "#4ade80"
+        dir_bg = "linear-gradient(135deg, rgba(34,197,94,0.15), rgba(17,24,39,0.8))"
+        dir_icon = "🟢"
+        dir_arrow = "▲"
+        primary_target = upside_target
+        primary_pts = upside_pts
+        secondary_target = downside_target
+    elif direction_score <= -20:
+        dir_label = "BEARISH"
+        dir_color = "#f87171"
+        dir_bg = "linear-gradient(135deg, rgba(239,68,68,0.15), rgba(17,24,39,0.8))"
+        dir_icon = "🔴"
+        dir_arrow = "▼"
+        primary_target = downside_target
+        primary_pts = downside_pts
+        secondary_target = upside_target
+    else:
+        dir_label = "SIDEWAYS"
+        dir_color = "#fbbf24"
+        dir_bg = "linear-gradient(135deg, rgba(245,158,11,0.12), rgba(17,24,39,0.8))"
+        dir_icon = "🟡"
+        dir_arrow = "↔"
+        primary_target = max_pain
+        primary_pts = abs(spot_price - max_pain)
+        secondary_target = max_pain
+
+    # Build signals HTML
+    signals_html = ""
+    for title, bias, detail in signals:
+        if bias == "bullish":
+            dot = '<span style="color:#4ade80;">●</span>'
+        elif bias == "bearish":
+            dot = '<span style="color:#f87171;">●</span>'
+        else:
+            dot = '<span style="color:#fbbf24;">●</span>'
+        signals_html += f"""
+        <div style="padding:6px 0; border-bottom:1px solid rgba(30,41,59,0.5);">
+            <div style="font-size:13px; font-weight:600; color:#e2e8f0;">{dot} {title}</div>
+            <div style="font-size:11px; color:#94a3b8; margin-top:2px; padding-left:16px;">{detail}</div>
+        </div>"""
+
+    st.markdown(f"""
+    <div style="border:1px solid #1e293b; border-radius:12px; padding:0; margin:12px 0 14px 0;
+                background:{dir_bg}; overflow:hidden;">
+        <!-- Header -->
+        <div style="display:flex; align-items:center; justify-content:space-between;
+                    padding:16px 20px; border-bottom:1px solid #1e293b;">
+            <div style="display:flex; align-items:center; gap:10px;">
+                <span style="font-size:10px; color:#94a3b8; text-transform:uppercase; letter-spacing:2px; font-weight:600;">
+                    OI Change Directional Forecast
+                </span>
+            </div>
+            <div style="display:flex; align-items:center; gap:8px;">
+                <span style="font-size:22px;">{dir_icon}</span>
+                <span style="font-size:20px; font-weight:800; color:{dir_color}; font-family:'JetBrains Mono',monospace;">
+                    {dir_label}
+                </span>
+            </div>
+        </div>
+        <!-- Targets Row -->
+        <div style="display:flex; padding:14px 20px; gap:0; border-bottom:1px solid #1e293b;">
+            <div style="flex:1; text-align:center; border-right:1px solid #1e293b;">
+                <div style="font-size:9px; color:#64748b; text-transform:uppercase; letter-spacing:1.5px; font-weight:600;">
+                    Downside Target
+                </div>
+                <div style="font-family:'JetBrains Mono',monospace; font-size:20px; font-weight:800; color:#f87171; margin-top:4px;">
+                    {downside_target:,.0f}
+                </div>
+                <div style="font-size:11px; color:#f87171;">▼ {downside_pts:,.0f} pts</div>
+            </div>
+            <div style="flex:1; text-align:center; border-right:1px solid #1e293b;">
+                <div style="font-size:9px; color:#64748b; text-transform:uppercase; letter-spacing:1.5px; font-weight:600;">
+                    Spot Now
+                </div>
+                <div style="font-family:'JetBrains Mono',monospace; font-size:20px; font-weight:800; color:#ffffff; margin-top:4px;">
+                    {spot_price:,.1f}
+                </div>
+                <div style="font-size:11px; color:#94a3b8;">ATM {atm_strike:,.0f}</div>
+            </div>
+            <div style="flex:1; text-align:center;">
+                <div style="font-size:9px; color:#64748b; text-transform:uppercase; letter-spacing:1.5px; font-weight:600;">
+                    Upside Target
+                </div>
+                <div style="font-family:'JetBrains Mono',monospace; font-size:20px; font-weight:800; color:#4ade80; margin-top:4px;">
+                    {upside_target:,.0f}
+                </div>
+                <div style="font-size:11px; color:#4ade80;">▲ {upside_pts:,.0f} pts</div>
+            </div>
+        </div>
+        <!-- OI Change Summary -->
+        <div style="display:flex; padding:10px 20px; gap:0; border-bottom:1px solid #1e293b;">
+            <div style="flex:1; text-align:center;">
+                <span style="font-size:10px; color:#64748b; text-transform:uppercase; letter-spacing:1px;">Call OI Δ</span><br>
+                <span style="font-family:'JetBrains Mono',monospace; font-size:15px; font-weight:700;
+                             color:{'#f87171' if ce_chg_total > 0 else '#4ade80'};">
+                    {ce_chg_total:+,.0f}
+                </span>
+                <span style="font-size:10px; color:#64748b;"> {'(resistance ↑)' if ce_chg_total > 0 else '(ceiling removed)'}</span>
+            </div>
+            <div style="flex:1; text-align:center;">
+                <span style="font-size:10px; color:#64748b; text-transform:uppercase; letter-spacing:1px;">Put OI Δ</span><br>
+                <span style="font-family:'JetBrains Mono',monospace; font-size:15px; font-weight:700;
+                             color:{'#4ade80' if pe_chg_total > 0 else '#f87171'};">
+                    {pe_chg_total:+,.0f}
+                </span>
+                <span style="font-size:10px; color:#64748b;"> {'(support ↑)' if pe_chg_total > 0 else '(floor removed)'}</span>
+            </div>
+        </div>
+        <!-- Signals -->
+        <div style="padding:12px 20px;">
+            <div style="font-size:9px; color:#64748b; text-transform:uppercase; letter-spacing:1.5px; font-weight:600; margin-bottom:6px;">
+                Signal Breakdown
+            </div>
+            {signals_html}
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ═══════════════════════════════════════════════
     #  TABBED LAYOUT
     # ═══════════════════════════════════════════════
 
