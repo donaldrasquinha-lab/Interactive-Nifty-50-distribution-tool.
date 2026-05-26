@@ -750,19 +750,49 @@ try:
     IST = timezone(timedelta(hours=5, minutes=30))
     now = datetime.now(IST).replace(tzinfo=None)  # IST-aware then strip tz for naive comparison
 
-    valid_expiries = []
+    today_str = now.strftime("%Y-%m-%d")
+    market_closed_today = now.hour >= 16 or (now.hour == 15 and now.minute >= 30)
+    today_was_expiry = today_str in expiries
+
+    # Separate into: today's expired, future expiries
+    future_expiries = []
+    past_expiries = []
     for e in expiries:
         e_dt = datetime.strptime(e, "%Y-%m-%d").replace(hour=15, minute=30)
-        if e_dt > now:
-            valid_expiries.append(e)
-        elif e_dt.date() == now.date() and now.hour < 16:
-            # Expiry day but before 4 PM IST — still valid (market closes 3:30, give 30 min buffer)
-            valid_expiries.append(e)
+        if e_dt.date() == now.date():
+            if market_closed_today:
+                past_expiries.append(e)  # Today's expiry is done
+            else:
+                future_expiries.insert(0, e)  # Today's expiry still live — put first
+        elif e_dt > now:
+            future_expiries.append(e)
+        else:
+            past_expiries.append(e)
 
-    if not valid_expiries:
-        valid_expiries = expiries  # Fallback: show all if none are future
+    # Build the dropdown with clear labels
+    expiry_options = []
+    expiry_label_map = {}
+    for e in future_expiries:
+        label = e
+        e_dt = datetime.strptime(e, "%Y-%m-%d")
+        if e_dt.date() == now.date():
+            label = f"{e} (Today — Live)"
+        expiry_options.append(label)
+        expiry_label_map[label] = e
 
-    selected_expiry = st.sidebar.selectbox("📅 Expiry", valid_expiries, index=0)
+    # Add today's closed expiry as an option if market is closed and it was expiry day
+    if today_was_expiry and market_closed_today:
+        closed_label = f"{today_str} (Today — Closed)"
+        expiry_options.append(closed_label)
+        expiry_label_map[closed_label] = today_str
+
+    if not expiry_options:
+        expiry_options = expiries
+        expiry_label_map = {e: e for e in expiries}
+
+    selected_label = st.sidebar.selectbox("📅 Expiry", expiry_options, index=0)
+    selected_expiry = expiry_label_map.get(selected_label, selected_label)
+    is_viewing_closed_expiry = "Closed" in selected_label if isinstance(selected_label, str) else False
 
     expiry_dt = datetime.strptime(selected_expiry, "%Y-%m-%d").replace(hour=15, minute=30)
     tte_seconds = max((expiry_dt - now).total_seconds(), 0)
@@ -771,15 +801,20 @@ try:
 
     # Human-readable DTE label
     is_expiry_day = expiry_dt.date() == now.date()
-    if is_expiry_day:
+    if is_viewing_closed_expiry:
+        dte_display = "CLOSED"
+        dte_subtitle = "📋 Viewing closed data"
+    elif is_expiry_day:
         hours_left = max(tte_seconds / 3600, 0)
         if hours_left <= 0:
             dte_display = "EXPIRED"
+            dte_subtitle = "⚡ EXPIRY DAY"
         elif hours_left < 1:
             dte_display = f"{hours_left*60:.0f}m left"
+            dte_subtitle = "⚡ EXPIRY DAY"
         else:
             dte_display = f"{hours_left:.1f}h left"
-        dte_subtitle = "⚡ EXPIRY DAY"
+            dte_subtitle = "⚡ EXPIRY DAY"
     elif tte_seconds <= 0:
         dte_display = "EXPIRED"
         dte_subtitle = None
@@ -1130,6 +1165,29 @@ try:
 
     new_resistance = float(ce_chg_positive.loc[ce_chg_positive["CE OI Chg"].idxmax(), "Strike"]) if not ce_chg_positive.empty else resistance
     new_support = float(pe_chg_positive.loc[pe_chg_positive["PE OI Chg"].idxmax(), "Strike"]) if not pe_chg_positive.empty else support
+
+    # Ensure targets make sense: support must be below spot, resistance above
+    # If they land on the same strike or wrong side, fall back to OI-based levels
+    if new_support >= spot_price:
+        # Look for highest PE OI change BELOW spot
+        pe_below = pe_chg_positive[pe_chg_positive["Strike"] < spot_price]
+        if not pe_below.empty:
+            new_support = float(pe_below.loc[pe_below["PE OI Chg"].idxmax(), "Strike"])
+        else:
+            new_support = support  # Fall back to absolute highest PE OI strike
+
+    if new_resistance <= spot_price:
+        # Look for highest CE OI change ABOVE spot
+        ce_above = ce_chg_positive[ce_chg_positive["Strike"] > spot_price]
+        if not ce_above.empty:
+            new_resistance = float(ce_above.loc[ce_above["CE OI Chg"].idxmax(), "Strike"])
+        else:
+            new_resistance = resistance  # Fall back to absolute highest CE OI strike
+
+    # Final safety: if still same or crossed, use OI-based support/resistance
+    if new_support >= new_resistance:
+        new_support = min(support, atm_strike - diff)
+        new_resistance = max(resistance, atm_strike + diff)
 
     # OI interpretation matrix:
     # Call OI build-up = writers selling calls = bearish (they don't think it'll go up)
