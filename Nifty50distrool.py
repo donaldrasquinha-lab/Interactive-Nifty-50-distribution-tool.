@@ -83,11 +83,12 @@ div[data-testid="stMetric"] label {
 div[data-testid="stMetric"] div[data-testid="stMetricValue"] {
     font-family: 'JetBrains Mono', monospace !important;
     font-weight: 800 !important;
-    font-size: 20px !important;
+    font-size: 18px !important;
     color: #ffffff !important;
     white-space: nowrap !important;
     overflow: visible !important;
     text-overflow: unset !important;
+    min-width: 0 !important;
 }
 div[data-testid="stMetric"] div[data-testid="stMetricDelta"] {
     color: #94a3b8 !important;
@@ -743,11 +744,44 @@ try:
         st.error("No active derivative contracts found.")
         st.stop()
 
-    selected_expiry = st.sidebar.selectbox("📅 Expiry", expiries, index=0)
+    # Smart expiry selection: skip past expiries, auto-advance after 3:30 PM IST on expiry day
+    now = datetime.now()
+    valid_expiries = []
+    for e in expiries:
+        e_dt = datetime.strptime(e, "%Y-%m-%d").replace(hour=15, minute=30)
+        if e_dt > now:
+            valid_expiries.append(e)
+        elif e_dt.date() == now.date() and now.hour < 16:
+            # Expiry day but before 4 PM — still valid (market closes 3:30, give 30 min buffer)
+            valid_expiries.append(e)
+
+    if not valid_expiries:
+        valid_expiries = expiries  # Fallback: show all if none are future
+
+    selected_expiry = st.sidebar.selectbox("📅 Expiry", valid_expiries, index=0)
 
     expiry_dt = datetime.strptime(selected_expiry, "%Y-%m-%d").replace(hour=15, minute=30)
-    tte_years = max((expiry_dt - datetime.now()).total_seconds() / (86400*365), 0.0001)
+    tte_seconds = max((expiry_dt - now).total_seconds(), 0)
+    tte_years = max(tte_seconds / (86400 * 365), 0.0001)
     tte_days = max(tte_years * 365, 0.01)
+
+    # Human-readable DTE label
+    is_expiry_day = expiry_dt.date() == now.date()
+    if is_expiry_day:
+        hours_left = max(tte_seconds / 3600, 0)
+        if hours_left <= 0:
+            dte_display = "EXPIRED"
+        elif hours_left < 1:
+            dte_display = f"{hours_left*60:.0f}m left"
+        else:
+            dte_display = f"{hours_left:.1f}h left"
+        dte_subtitle = "⚡ EXPIRY DAY"
+    elif tte_days < 1:
+        dte_display = f"{tte_days*24:.0f}h"
+        dte_subtitle = "Tomorrow expiry"
+    else:
+        dte_display = f"{tte_days:.0f} days"
+        dte_subtitle = None
 
     with st.spinner("Loading chain, contracts & candles..."):
         candles_df = client.get_historical_candles(index_meta["key"], "day", 60)
@@ -1005,7 +1039,7 @@ try:
     adx_val = adx_metrics["adx"] if adx_metrics else None
     k6.metric("ADX (14)", f"{adx_val}" if adx_val else "—",
               f"+DI {adx_metrics['plus_di']}/-DI {adx_metrics['minus_di']}" if adx_metrics else None)
-    k7.metric("DTE", f"{tte_days:.1f} days")
+    k7.metric("DTE", dte_display, dte_subtitle)
 
     # ── IV Percentile Gauge ──
     iv_color = "#22c55e" if iv_pct < 30 else "#f59e0b" if iv_pct < 70 else "#ef4444"
@@ -2159,7 +2193,7 @@ try:
     st.markdown("---")
     f1, f2, f3 = st.columns(3)
     f1.caption(f"🕐 {datetime.now().strftime('%H:%M:%S IST')}")
-    f2.caption(f"📅 Expiry: {selected_expiry} · DTE: {tte_days:.1f}d")
+    f2.caption(f"📅 Expiry: {selected_expiry} · {dte_display}")
     f3.caption(f"📊 {len(df)} strikes loaded · Lot: {lot_size}")
 
     # Auto-refresh
