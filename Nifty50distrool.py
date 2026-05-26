@@ -18,6 +18,14 @@ import plotly.express as px
 from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 import time
+
+# Optional: streamlit-autorefresh for smooth non-blocking refresh
+# Install: pip install streamlit-autorefresh
+try:
+    from streamlit_autorefresh import st_autorefresh
+    HAS_AUTOREFRESH = True
+except ImportError:
+    HAS_AUTOREFRESH = False
 import colorsys
 
 # ═══════════════════════════════════════════════
@@ -1261,7 +1269,7 @@ try:
         '</div></div>'
     )
 
-    st.markdown(forecast_html, unsafe_allow_html=True)
+    # forecast_html is built above, rendered inside Options Chain tab below
 
     # ═══════════════════════════════════════════════
     #  TABBED LAYOUT
@@ -1345,6 +1353,9 @@ try:
     #  TAB 2: OPTIONS CHAIN
     # ──────────────────────────────────
     with tab_chain:
+        # OI Change Directional Forecast — displayed at top of chain tab
+        st.markdown(forecast_html, unsafe_allow_html=True)
+
         st.markdown("#### Live Options Chain — Greeks & Market Data")
 
         # Build a color-mapped HTML table for better visual density
@@ -2153,8 +2164,14 @@ try:
 
     # Auto-refresh
     if auto_refresh:
-        time.sleep(refresh_interval)
-        st.rerun()
+        if HAS_AUTOREFRESH:
+            # Non-blocking: JS-based timer, page stays static, only data refreshes
+            st_autorefresh(interval=refresh_interval * 1000, limit=None, key="data_refresh")
+        else:
+            # Fallback: blocking rerun (page flickers but works without extra package)
+            st.caption("💡 *Install `streamlit-autorefresh` for smoother refresh without page flicker.*")
+            time.sleep(refresh_interval)
+            st.rerun()
 
 except ValueError as ve:
     st.error(f"🚫 **Data Error**: {ve}")
