@@ -1251,9 +1251,65 @@ try:
             signals.append(("Near-ATM OI skews toward Call writing", "bearish",
                            "Writers near ATM are predominantly selling calls — immediate downside expected"))
 
-    # Compute expected move from OI structure
-    upside_target = new_resistance  # Ceiling
-    downside_target = new_support   # Floor
+    # Signal 4: PCR confirmation
+    if pcr > 1.1:
+        direction_score += 10
+        signals.append(("PCR confirms bullish OI structure", "bullish",
+                       f"PCR at {pcr} — put writers outnumber call writers across the chain"))
+    elif pcr < 0.9:
+        direction_score -= 10
+        signals.append(("PCR confirms bearish OI structure", "bearish",
+                       f"PCR at {pcr} — call writers dominate, ceiling pressure across the chain"))
+
+    # Signal 5: Max Pain magnet effect
+    mp_distance = max_pain - spot_price
+    if abs(mp_distance) > diff:
+        if mp_distance > 0:
+            direction_score += 5
+            signals.append(("Max Pain above spot — gravitational pull upward", "bullish",
+                           f"Max Pain at {max_pain:,.0f} is {mp_distance:+,.0f} pts above spot — expiry drift likely upward"))
+        else:
+            direction_score -= 5
+            signals.append(("Max Pain below spot — gravitational pull downward", "bearish",
+                           f"Max Pain at {max_pain:,.0f} is {mp_distance:+,.0f} pts below spot — expiry drift likely downward"))
+
+    # ── Compute expected move magnitude ──
+    # Method: OI-weighted average distance from spot for the dominant side
+    # The more concentrated the OI change, the tighter the expected range
+
+    # Find multiple support/resistance levels (not just the highest)
+    ce_above = ce_chg_positive[ce_chg_positive["Strike"] > spot_price].sort_values("CE OI Chg", ascending=False)
+    pe_below = pe_chg_positive[pe_chg_positive["Strike"] < spot_price].sort_values("PE OI Chg", ascending=False)
+
+    # Immediate resistance: nearest CE OI build-up above spot
+    imm_resistance = float(ce_above.iloc[0]["Strike"]) if not ce_above.empty else atm_strike + 2 * diff
+    # Immediate support: nearest PE OI build-up below spot
+    imm_support = float(pe_below.iloc[0]["Strike"]) if not pe_below.empty else atm_strike - 2 * diff
+
+    # Strong resistance: highest CE OI change above spot
+    strong_resistance = new_resistance
+    # Strong support: highest PE OI change below spot
+    strong_support = new_support
+
+    # Expected move in points (OI-change-weighted average target)
+    if direction_score > 0:
+        # Bullish: expected to move toward resistance
+        # Magnitude weighted by conviction score
+        conviction_pct = min(abs(direction_score) / 50, 1.0)
+        expected_move = (imm_resistance - spot_price) * conviction_pct + (strong_resistance - spot_price) * (1 - conviction_pct) * 0.5
+        expected_move = max(expected_move, diff * 0.5)
+    elif direction_score < 0:
+        # Bearish: expected to move toward support
+        conviction_pct = min(abs(direction_score) / 50, 1.0)
+        expected_move = (spot_price - imm_support) * conviction_pct + (spot_price - strong_support) * (1 - conviction_pct) * 0.5
+        expected_move = max(expected_move, diff * 0.5)
+        expected_move = -expected_move  # Negative for bearish
+    else:
+        expected_move = 0
+
+    # Compute target levels
+    upside_target = strong_resistance
+    downside_target = strong_support
     upside_pts = upside_target - spot_price
     downside_pts = spot_price - downside_target
 
@@ -1285,6 +1341,28 @@ try:
         primary_target = max_pain
         primary_pts = abs(spot_price - max_pain)
         secondary_target = max_pain
+        expected_move = 0
+
+    # Conviction label
+    abs_score = abs(direction_score)
+    if abs_score >= 50:
+        conviction_label = "STRONG"
+        conviction_color = dir_color
+    elif abs_score >= 30:
+        conviction_label = "MODERATE"
+        conviction_color = "#fbbf24"
+    elif abs_score >= 15:
+        conviction_label = "WEAK"
+        conviction_color = "#94a3b8"
+    else:
+        conviction_label = "NO SIGNAL"
+        conviction_color = "#64748b"
+
+    # Expected move display
+    exp_move_str = f"{expected_move:+,.0f} pts" if expected_move != 0 else "—"
+    exp_move_color = "#4ade80" if expected_move > 0 else "#f87171" if expected_move < 0 else "#64748b"
+    exp_target = spot_price + expected_move
+    exp_target_str = f"{exp_target:,.0f}" if expected_move != 0 else "—"
 
     # Build signals HTML
     signals_parts = []
@@ -1317,37 +1395,60 @@ try:
     atm_str = f"{atm_strike:,.0f}"
     us_target_str = f"{upside_target:,.0f}"
     us_pts_str = f"{upside_pts:,.0f}"
+    imm_sup_str = f"{imm_support:,.0f}"
+    imm_res_str = f"{imm_resistance:,.0f}"
 
-    # Build the card HTML as a plain string (no f-string nesting issues)
+    # Build the card HTML
     forecast_html = (
         '<div style="border:1px solid #1e293b; border-radius:12px; padding:0; margin:12px 0 14px 0;'
         ' background:' + dir_bg + '; overflow:hidden;">'
-        # Header
+        # Header with conviction badge
         '<div style="display:flex; align-items:center; justify-content:space-between;'
         ' padding:16px 20px; border-bottom:1px solid #1e293b;">'
         '<span style="font-size:10px; color:#94a3b8; text-transform:uppercase; letter-spacing:2px; font-weight:600;">'
         'OI Change Directional Forecast</span>'
+        '<div style="display:flex; align-items:center; gap:14px;">'
+        '<span style="font-size:10px; font-weight:700; color:' + conviction_color + ';'
+        ' background:rgba(0,0,0,0.3); padding:3px 10px; border-radius:4px; letter-spacing:1.2px;">'
+        + conviction_label + '</span>'
         '<div style="display:flex; align-items:center; gap:8px;">'
         '<span style="font-size:22px;">' + dir_icon + '</span>'
         '<span style="font-size:20px; font-weight:800; color:' + dir_color + '; font-family:JetBrains Mono,monospace;">'
-        + dir_label + '</span></div></div>'
-        # Targets Row
-        '<div style="display:flex; padding:14px 20px; gap:0; border-bottom:1px solid #1e293b;">'
+        + dir_label + '</span></div></div></div>'
+        # Expected Move row
+        '<div style="display:flex; padding:12px 20px; gap:0; border-bottom:1px solid #1e293b; align-items:center;">'
         '<div style="flex:1; text-align:center; border-right:1px solid #1e293b;">'
-        '<div style="font-size:9px; color:#64748b; text-transform:uppercase; letter-spacing:1.5px; font-weight:600;">Downside Target</div>'
-        '<div style="font-family:JetBrains Mono,monospace; font-size:20px; font-weight:800; color:#f87171; margin-top:4px;">'
-        + ds_target_str + '</div>'
-        '<div style="font-size:11px; color:#f87171;">▼ ' + ds_pts_str + ' pts</div></div>'
+        '<div style="font-size:9px; color:#64748b; text-transform:uppercase; letter-spacing:1.5px; font-weight:600;">Expected Move</div>'
+        '<div style="font-family:JetBrains Mono,monospace; font-size:24px; font-weight:800; color:' + exp_move_color + '; margin-top:4px;">'
+        + exp_move_str + '</div></div>'
         '<div style="flex:1; text-align:center; border-right:1px solid #1e293b;">'
-        '<div style="font-size:9px; color:#64748b; text-transform:uppercase; letter-spacing:1.5px; font-weight:600;">Spot Now</div>'
-        '<div style="font-family:JetBrains Mono,monospace; font-size:20px; font-weight:800; color:#ffffff; margin-top:4px;">'
-        + spot_str + '</div>'
-        '<div style="font-size:11px; color:#94a3b8;">ATM ' + atm_str + '</div></div>'
+        '<div style="font-size:9px; color:#64748b; text-transform:uppercase; letter-spacing:1.5px; font-weight:600;">Expected Target</div>'
+        '<div style="font-family:JetBrains Mono,monospace; font-size:24px; font-weight:800; color:' + exp_move_color + '; margin-top:4px;">'
+        + exp_target_str + '</div></div>'
         '<div style="flex:1; text-align:center;">'
-        '<div style="font-size:9px; color:#64748b; text-transform:uppercase; letter-spacing:1.5px; font-weight:600;">Upside Target</div>'
-        '<div style="font-family:JetBrains Mono,monospace; font-size:20px; font-weight:800; color:#4ade80; margin-top:4px;">'
+        '<div style="font-size:9px; color:#64748b; text-transform:uppercase; letter-spacing:1.5px; font-weight:600;">Spot Now</div>'
+        '<div style="font-family:JetBrains Mono,monospace; font-size:24px; font-weight:800; color:#ffffff; margin-top:4px;">'
+        + spot_str + '</div></div></div>'
+        # Multi-level targets
+        '<div style="display:flex; padding:10px 20px; gap:0; border-bottom:1px solid #1e293b;">'
+        '<div style="flex:1; text-align:center; border-right:1px solid #1e293b;">'
+        '<div style="font-size:9px; color:#64748b; text-transform:uppercase; letter-spacing:1px;">Strong Support</div>'
+        '<div style="font-family:JetBrains Mono,monospace; font-size:16px; font-weight:700; color:#4ade80; margin-top:2px;">'
+        + ds_target_str + '</div>'
+        '<div style="font-size:10px; color:#4ade80;">▼ ' + ds_pts_str + ' pts</div></div>'
+        '<div style="flex:1; text-align:center; border-right:1px solid #1e293b;">'
+        '<div style="font-size:9px; color:#64748b; text-transform:uppercase; letter-spacing:1px;">Imm. Support</div>'
+        '<div style="font-family:JetBrains Mono,monospace; font-size:16px; font-weight:700; color:#86efac; margin-top:2px;">'
+        + imm_sup_str + '</div></div>'
+        '<div style="flex:1; text-align:center; border-right:1px solid #1e293b;">'
+        '<div style="font-size:9px; color:#64748b; text-transform:uppercase; letter-spacing:1px;">Imm. Resistance</div>'
+        '<div style="font-family:JetBrains Mono,monospace; font-size:16px; font-weight:700; color:#fca5a5; margin-top:2px;">'
+        + imm_res_str + '</div></div>'
+        '<div style="flex:1; text-align:center;">'
+        '<div style="font-size:9px; color:#64748b; text-transform:uppercase; letter-spacing:1px;">Strong Resistance</div>'
+        '<div style="font-family:JetBrains Mono,monospace; font-size:16px; font-weight:700; color:#f87171; margin-top:2px;">'
         + us_target_str + '</div>'
-        '<div style="font-size:11px; color:#4ade80;">▲ ' + us_pts_str + ' pts</div></div></div>'
+        '<div style="font-size:10px; color:#f87171;">▲ ' + us_pts_str + ' pts</div></div></div>'
         # OI Change Summary
         '<div style="display:flex; padding:10px 20px; gap:0; border-bottom:1px solid #1e293b;">'
         '<div style="flex:1; text-align:center;">'
